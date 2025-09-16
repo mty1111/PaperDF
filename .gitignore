@@ -1,3 +1,21 @@
+@'
+# Python
 __pycache__/
 *.pyc
 .venv/
+.env
+pdf_metadata_renamer.env
+paperdf.env
+
+# PyInstaller
+build/
+dist/
+# 如果你想把自定义 .spec 固化到仓库，注释掉下一行
+*.spec
+
+# OS/编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+'@ | Out-File -Encoding utf8 .gitignore
