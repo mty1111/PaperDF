@@ -1,0 +1,173 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag when running manually (e.g., v1.3.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller python-dotenv PyPDF2 google-genai titlecase
+
+      - name: Compute version
+        id: ver
+        shell: bash
+        env:
+          WF_INPUT_VERSION: ${{ github.event.inputs.version }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          V="${GITHUB_REF_NAME:-${WF_INPUT_VERSION:-${VERSION:-dev}}}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "$V" > VERSION.txt
+          echo "APP_VERSION=$V" >> "$GITHUB_ENV"
+          echo "Computed version: $V"
+
+      # ================= Windows => .exe =================
+      - name: Build (Windows .exe)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "List assets:"
+          Get-ChildItem assets | Format-Table Name,Length
+          pyinstaller --noconfirm --onefile --windowed --clean --noupx `
+            --name "PaperDF" `
+            --icon "assets/icon.ico" `
+            --add-data "assets;assets" `
+            --add-data "VERSION.txt;." `
+            pdf_metadata_renamer.py
+          Write-Host "dist contents:"
+          Get-ChildItem dist | Format-Table Name,Length,LastWriteTime
+          $ver = "${{ steps.ver.outputs.version }}"
+          Copy-Item "dist/PaperDF.exe" "PaperDF-$ver-windows.exe" -Force
+          Get-Item "PaperDF-$ver-windows.exe" | Format-Table Name,Length
+
+      - name: Upload artifact (Windows .exe)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-PaperDF-${{ steps.ver.outputs.version }}
+          path: PaperDF-${{ steps.ver.outputs.version }}-windows.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      # ================= Linux => .tar.gz =================
+      - name: Build (Linux onefile)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ls -lah assets
+          pyinstaller --noconfirm --onefile --clean \
+            --name "PaperDF" \
+            --add-data "assets:assets" \
+            --add-data "VERSION.txt:." \
+            pdf_metadata_renamer.py
+          ls -lah dist
+          ver="${{ steps.ver.outputs.version }}"
+          cp "dist/PaperDF" "PaperDF-$ver-linux"
+          tar -czf "PaperDF-$ver-linux.tar.gz" "PaperDF-$ver-linux"
+          ls -lah "PaperDF-$ver-linux.tar.gz"
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-PaperDF-${{ steps.ver.outputs.version }}
+          path: PaperDF-${{ steps.ver.outputs.version }}-linux.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      # ================= macOS => .pkg =================
+      - name: Build (macOS .app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ls -lah assets
+          pyinstaller --noconfirm --windowed --clean \
+            --name "PaperDF" \
+            --icon "assets/icon.icns" \
+            --add-data "assets:assets" \
+            --add-data "VERSION.txt:." \
+            pdf_metadata_renamer.py
+          ls -lah dist
+          test -d "dist/PaperDF.app" || { echo "PaperDF.app not found"; exit 1; }
+
+      - name: Package (macOS .pkg)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ver="${{ steps.ver.outputs.version }}"
+          pkg="PaperDF-$ver-macos.pkg"
+          pkgbuild --install-location /Applications \
+                   --component "dist/PaperDF.app" \
+                   "$pkg"
+          ls -lah "$pkg"
+
+      - name: Upload artifact (macOS .pkg)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-PaperDF-${{ steps.ver.outputs.version }}
+          path: PaperDF-${{ steps.ver.outputs.version }}-macos.pkg
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts (always)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -d artifacts ]; then
+            echo "Top-level:" && ls -lah artifacts
+            echo
+            echo "Recursive:" && ls -lahR artifacts
+          else
+            echo "::warning::No 'artifacts' directory present."
+          fi
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || github.event.inputs.version || 'v-dev' }}
+          name: PaperDF ${{ github.ref_name || github.event.inputs.version || 'v-dev' }}
+          body: |
+            Automated build for ${{ github.ref_name || github.event.inputs.version || 'dev' }}.
+            - Windows: .exe with embedded .ico
+            - macOS: .pkg (from .app with .icns)
+            - Linux: .tar.gz (one-file)
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

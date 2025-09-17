@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+pdf_metadata_renamer.env
+paperdf.env
+
+# PyInstaller outputs
+build/
+dist/
+**/build/
+**/dist/
+# 如需提交自定义 .spec，请删掉下一行
+*.spec
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
