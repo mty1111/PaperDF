@@ -106,6 +106,7 @@ DEFAULT_BOOK_OUTPUT_PATTERN = '{authors} - {title} - {journal} ({year}).pdf'
 DEFAULT_UNPUBLISHED = 'Unpublished'
 DEFAULT_PAPER_PAGES = 4
 DEFAULT_BOOK_PAGES = 20
+MAX_PAGES_TO_EXTRACT = 50
 
 # Author format defaults
 DEFAULT_AUTHOR_FMT_PAPER = '{surname}'
@@ -140,6 +141,34 @@ stop_event = threading.Event()
 selected_files = []
 files_entry = None
 folder_entry = None
+
+def run_on_ui(root, callback):
+    try:
+        root.after(0, callback)
+    except (RuntimeError, tk.TclError):
+        pass
+
+def append_log(root, log_widget, message: str):
+    def write():
+        log_widget.insert(tk.END, message)
+        log_widget.see(tk.END)
+    run_on_ui(root, write)
+
+def clear_log(root, log_widget):
+    run_on_ui(root, lambda: log_widget.delete('1.0', tk.END))
+
+def set_progress(root, progress_bar, value=None, maximum=None, stop=False):
+    def update():
+        if maximum is not None:
+            progress_bar.config(maximum=maximum)
+        if value is not None:
+            progress_bar['value'] = value
+        if stop:
+            progress_bar.stop()
+    run_on_ui(root, update)
+
+def show_error(root, title: str, message: str):
+    run_on_ui(root, lambda: messagebox.showerror(title, message))
 
 # =========================
 # Resource path (for icons/assets, dev + PyInstaller onefile)
@@ -429,14 +458,81 @@ def show_setup_guide(root):
 # PDF extraction
 # =========================
 def extract_first_n_pages(pdf_path: str, n: int) -> bytes:
+    if n < 1:
+        raise ValueError('Pages to extract must be at least 1.')
     reader = PdfReader(pdf_path)
     writer = PdfWriter()
-    for page in reader.pages[:n]:
+    page_count = min(n, len(reader.pages))
+    for page in reader.pages[:page_count]:
         writer.add_page(page)
     buf = io.BytesIO()
     writer.write(buf)
     buf.seek(0)
     return buf.read()
+
+def _metadata_response_to_dict(data_raw) -> dict:
+    if isinstance(data_raw, list):
+        data_raw = next((item for item in data_raw if isinstance(item, dict)), None)
+    if isinstance(data_raw, dict):
+        keys = {str(k).strip().lower() for k in data_raw.keys()}
+        nested = data_raw.get('metadata')
+        if not (keys & {'authors', 'author', 'year', 'journal', 'publisher', 'title'}) and isinstance(nested, dict):
+            data_raw = nested
+    if not isinstance(data_raw, dict):
+        raise ValueError('Invalid JSON shape: expected an object with metadata fields.')
+    return {str(k).strip().lower(): v for k, v in data_raw.items()}
+
+def _metadata_text(value) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value).strip()
+    if isinstance(value, list):
+        for item in value:
+            text = _metadata_text(item)
+            if text:
+                return text
+        return ''
+    if isinstance(value, dict):
+        for key in ('value', 'name', 'text', 'title', 'journal', 'publisher', 'year'):
+            text = _metadata_text(value.get(key))
+            if text:
+                return text
+        return ''
+    return str(value).strip()
+
+def _author_name(value) -> str:
+    if isinstance(value, dict):
+        for key in ('name', 'full_name', 'full', 'author'):
+            text = _metadata_text(value.get(key))
+            if text:
+                return text
+        parts = [
+            _metadata_text(value.get('first')),
+            _metadata_text(value.get('middle')),
+            _metadata_text(value.get('surname') or value.get('last') or value.get('family')),
+        ]
+        suffix = _metadata_text(value.get('suffix'))
+        if suffix:
+            parts.append(suffix)
+        return ' '.join(part for part in parts if part).strip()
+    return _metadata_text(value)
+
+def _metadata_authors(value) -> list:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [name for name in (_author_name(item) for item in value) if name]
+    if isinstance(value, dict):
+        name = _author_name(value)
+        return [name] if name else []
+    text = _metadata_text(value)
+    if not text:
+        return []
+    separator = ';' if ';' in text else ','
+    return [author.strip() for author in text.split(separator) if author.strip()]
 
 # =========================
 # Gemini metadata extraction
@@ -444,44 +540,54 @@ def extract_first_n_pages(pdf_path: str, n: int) -> bytes:
 def get_metadata_from_snippet(pdf_bytes: bytes, is_book: bool) -> dict:
     global client
     upload_config = types.UploadFileConfig(display_name='snippet.pdf', mime_type='application/pdf')
-    snippet_file = client.files.upload(file=io.BytesIO(pdf_bytes), config=upload_config)
-    system_instruction = (
-        'You are an academic document manager. '
-        'From the first pages of the provided PDF, extract ONLY these fields: '
-        'Authors, Year, Journal, Title. For books, Journal should be the Publisher. '
-        'If a field is NOT clearly present, return it EMPTY ("" or []); DO NOT GUESS or fabricate. '
-        'Return strict JSON with keys: authors (array), year (string), journal (string), title (string).'
-    )
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[system_instruction, snippet_file],
-        config=types.GenerateContentConfig(response_mime_type='application/json', system_instruction=system_instruction)
-    )
-    logging.info(f"Gemini raw response: {response.text}")
+    snippet_file = None
     try:
-        data_raw = json.loads(response.text)
-        data = {k.lower(): v for k, v in data_raw.items()}
-    except json.JSONDecodeError:
-        raise ValueError(f'Invalid JSON: {response.text}')
+        snippet_file = client.files.upload(file=io.BytesIO(pdf_bytes), config=upload_config)
+        system_instruction = (
+            'You are an academic document manager. '
+            'From the first pages of the provided PDF, extract ONLY these fields: '
+            'Authors, Year, Journal, Title. For books, Journal should be the Publisher. '
+            'If a field is NOT clearly present, return it EMPTY ("" or []); DO NOT GUESS or fabricate. '
+            'Return strict JSON with keys: authors (array), year (string), journal (string), title (string).'
+        )
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[system_instruction, snippet_file],
+            config=types.GenerateContentConfig(response_mime_type='application/json', system_instruction=system_instruction)
+        )
+        logging.info(f"Gemini raw response: {response.text}")
+        try:
+            data_raw = json.loads(response.text)
+            data = _metadata_response_to_dict(data_raw)
+        except json.JSONDecodeError:
+            raise ValueError(f'Invalid JSON: {response.text}')
+    finally:
+        if snippet_file is not None:
+            snippet_name = getattr(snippet_file, 'name', None)
+            if snippet_name:
+                try:
+                    try:
+                        client.files.delete(name=snippet_name)
+                    except TypeError:
+                        client.files.delete(snippet_name)
+                except Exception as e:
+                    logging.warning(f"Failed to delete uploaded snippet '{snippet_name}': {e}")
 
-    raw_year = data.get('year')
-    year = 'n.d.' if (raw_year is None or str(raw_year).strip() == '' or str(raw_year).strip().lower() in {'unknown','unknownyear','n/a','na'}) else str(raw_year).strip()
+    raw_year = _metadata_text(data.get('year'))
+    year = 'n.d.' if (raw_year == '' or raw_year.lower() in {'unknown','unknownyear','n/a','na'}) else raw_year
 
-    authors = data.get('authors') or []
-    if isinstance(authors, str):
-        authors = [a.strip() for a in authors.split(',') if a.strip()]
+    authors = _metadata_authors(data.get('authors') or data.get('author'))
     unknown_tokens = {'unknown','n/a','na','none','anonymous','unknown author','unknownauthors'}
     authors = [a for a in authors if a.strip() and a.strip().lower() not in unknown_tokens]
     authors = [titlecase(a) for a in authors]
 
-    jraw = data.get('journal')
-    journal = (jraw or '').strip()
+    jraw = data.get('journal') or data.get('publisher')
+    journal = _metadata_text(jraw)
     if journal.lower() in unknown_tokens:
         journal = ''
     journal = titlecase(journal) if journal else ''
 
-    traw = data.get('title')
-    title = (traw or '').strip()
+    title = _metadata_text(data.get('title'))
     if title.lower() in unknown_tokens or title.lower() == 'unknowntitle':
         title = ''
     title = titlecase(title) if title else ''
@@ -502,12 +608,26 @@ def _metadata_all_empty(meta: dict) -> bool:
 # =========================
 # Author formatting
 # =========================
-_SUFFIXES = {'jr', 'jr.', 'sr.', 'ii', 'iii', 'iv'}
+_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
 
 def _parse_author(full: str):
     if not full:
         return {'first':'', 'middle':'', 'surname':'', 'suffix':''}
-    s = re.sub(r'[;,]', ' ', full).strip()
+    raw = re.sub(r'\s+', ' ', full).strip()
+    comma_parts = [p.strip() for p in raw.split(',') if p.strip()]
+    if len(comma_parts) >= 2 and comma_parts[1].lower() not in _SUFFIXES:
+        surname = comma_parts[0]
+        rest = re.sub(r'[;]', ' ', ' '.join(comma_parts[1:])).strip()
+        parts = [p for p in rest.split() if p]
+        suffix = ''
+        if parts and parts[-1].lower() in _SUFFIXES:
+            suffix = parts[-1]
+            parts = parts[:-1]
+        first = parts[0] if parts else ''
+        middle = ' '.join(parts[1:]) if len(parts) > 1 else ''
+        return {'first': first, 'middle': middle, 'surname': surname, 'suffix': suffix}
+
+    s = re.sub(r'[;,]', ' ', raw).strip()
     parts = [p for p in s.split() if p]
     suffix = ''
     if parts and parts[-1].lower() in _SUFFIXES:
@@ -608,10 +728,10 @@ def filename_already_formatted(file_path: str, is_book: bool) -> bool:
     global client
     name = os.path.basename(file_path)
     pattern = BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN
+    author_format = AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER
     mode = 'book' if is_book else 'paper'
     rules = (
-        "For paper mode: authors must follow the configured author format; "
-        "for book mode: authors must follow its configured format. "
+        f"Authors must follow this configured author format exactly: {author_format}. "
         "Use the given pattern as the canonical order and separators. "
         "For books, {journal} stands for the publisher. "
         "Ignore directory paths; check only the base filename (without leading folders)."
@@ -622,7 +742,8 @@ def filename_already_formatted(file_path: str, is_book: bool) -> bool:
         'Return ONLY JSON as {"ok": true} or {"ok": false}.'
     )
     prompt = (
-        f"Filename: {name}\nMode: {mode}\nExpected pattern: {pattern}\nRules: {rules}\n"
+        f"Filename: {name}\nMode: {mode}\nExpected pattern: {pattern}\n"
+        f"Expected author format: {author_format}\nRules: {rules}\n"
         "Decide if the filename is already correctly formatted."
     )
     try:
@@ -645,67 +766,70 @@ def filename_already_formatted(file_path: str, is_book: bool) -> bool:
 # =========================
 # Processing
 # =========================
-def process_list(file_list, pages, is_book, log_widget, progress_bar):
+def process_list(file_list, pages, is_book, log_widget, progress_bar, root):
     global client
     if not API_KEY:
-        messagebox.showerror('Error', 'Gemini API key is required.')
+        show_error(root, 'Error', 'Gemini API key is required.')
         return
     client = genai.Client(api_key=API_KEY)
-    log_widget.delete('1.0', tk.END)
+    clear_log(root, log_widget)
     stop_event.clear()
     total = len(file_list)
-    progress_bar.config(maximum=total, value=0)
+    set_progress(root, progress_bar, value=0, maximum=total)
     for idx, path in enumerate(file_list, 1):
         if stop_event.is_set():
-            log_widget.insert(tk.END, 'Aborted by user.\n'); break
-        log_widget.insert(tk.END, f'Processing ({idx}/{total}): {path}\n')
+            append_log(root, log_widget, 'Aborted by user.\n')
+            break
+        append_log(root, log_widget, f'Processing ({idx}/{total}): {path}\n')
         try:
             if filename_already_formatted(path, is_book):
-                log_widget.insert(tk.END, 'Already formatted—skipped\n')
-                progress_bar['value'] = idx; log_widget.see(tk.END); continue
+                append_log(root, log_widget, 'Already formatted—skipped\n')
+                continue
             snippet = extract_first_n_pages(path, pages)
             meta = get_metadata_from_snippet(snippet, is_book)
             if is_book and not (meta.get('title') or '').strip():
-                log_widget.insert(tk.END, 'Skipped (book title not found)\n')
-                progress_bar['value'] = idx; log_widget.see(tk.END); continue
+                append_log(root, log_widget, 'Skipped (book title not found)\n')
+                continue
             if _metadata_all_empty(meta):
-                log_widget.insert(tk.END, 'Skipped (empty metadata)\n')
-                progress_bar['value'] = idx; log_widget.see(tk.END); continue
+                append_log(root, log_widget, 'Skipped (empty metadata)\n')
+                continue
             new_name = build_new_filename(meta, is_book)
             dir_path = os.path.dirname(path)
             dst = os.path.join(dir_path, new_name)
             if os.path.abspath(path) == os.path.abspath(dst):
-                log_widget.insert(tk.END, 'Skipped (same name)\n'); continue
+                append_log(root, log_widget, 'Skipped (same name)\n')
+                continue
             if os.path.exists(dst):
-                try:
-                    if _same_file(path, dst):
-                        log_widget.insert(tk.END, 'Duplicate content detected; skipped rename\n'); continue
-                except Exception:
-                    pass
+                if _same_file(path, dst):
+                    append_log(root, log_widget, 'Duplicate content detected; skipped rename\n')
+                    continue
                 base, ext = os.path.splitext(new_name)
                 short = _sha1_hex(path)[:8]
-                candidate = f"{base} [{short}]{ext}"
-                dst = os.path.join(dir_path, candidate)
-                counter = 2
-                while os.path.exists(dst):
-                    try:
-                        if _same_file(path, dst):
-                            log_widget.insert(tk.END, 'Duplicate content detected; skipped rename'); break
-                    except Exception:
-                        pass
-                    candidate = f"{base} [{short}-{counter}]{ext}"
-                    dst = os.path.join(dir_path, candidate); counter += 1
-                if os.path.exists(dst) and _same_file(path, dst):
+                counter = 1
+                while True:
+                    suffix = f' [{short}]' if counter == 1 else f' [{short}-{counter}]'
+                    candidate = f'{base}{suffix}{ext}'
+                    candidate_dst = os.path.join(dir_path, candidate)
+                    if not os.path.exists(candidate_dst):
+                        dst = candidate_dst
+                        break
+                    if _same_file(path, candidate_dst):
+                        append_log(root, log_widget, 'Duplicate content detected; skipped rename\n')
+                        dst = None
+                        break
+                    counter += 1
+                if dst is None:
                     continue
-            log_widget.insert(tk.END, f'Input: {os.path.basename(path)}\n')
+            append_log(root, log_widget, f'Input: {os.path.basename(path)}\n')
             os.replace(path, dst)
-            log_widget.insert(tk.END, f'Output: {os.path.basename(dst)}\n')
+            append_log(root, log_widget, f'Output: {os.path.basename(dst)}\n')
         except Exception as e:
-            log_widget.insert(tk.END, f'Error: {e}\n')
-        progress_bar['value'] = idx; log_widget.see(tk.END)
+            append_log(root, log_widget, f'Error: {e}\n')
+        finally:
+            set_progress(root, progress_bar, value=idx)
     if not stop_event.is_set():
-        log_widget.insert(tk.END, 'Done!\n')
-    progress_bar.stop()
+        append_log(root, log_widget, 'Done!\n')
+    set_progress(root, progress_bar, stop=True)
 
 # =========================
 # Main GUI
@@ -790,20 +914,27 @@ def main():
             messagebox.showerror('Error', 'Select files or folder.'); return
         try:
             pages = int(pge.get().strip())
-        except:
-            pages = DEFAULT_PAPER_PAGES
-        items = selected_files if selected_files else [
+        except ValueError:
+            messagebox.showerror('Error', 'Pages to extract must be a whole number.'); return
+        if pages < 1 or pages > MAX_PAGES_TO_EXTRACT:
+            messagebox.showerror('Error', f'Pages to extract must be between 1 and {MAX_PAGES_TO_EXTRACT}.'); return
+        items = list(selected_files) if selected_files else [
             os.path.join(dp, f) for dp, _, fs in os.walk(folder) for f in fs if f.lower().endswith('.pdf')
         ]
         if not items:
             messagebox.showinfo('Info', 'No PDF files found.'); return
         start_btn.config(state='disabled'); abort_btn.config(state='normal')
-        threading.Thread(
-            target=lambda: (process_list(items, pages, book_var.get(), logw, prog),
-                            start_btn.config(state='normal'),
-                            abort_btn.config(state='disabled')),
-            daemon=True
-        ).start()
+
+        def run_worker():
+            try:
+                process_list(items, pages, book_var.get(), logw, prog, root)
+            finally:
+                run_on_ui(root, lambda: (
+                    start_btn.config(state='normal'),
+                    abort_btn.config(state='disabled')
+                ))
+
+        threading.Thread(target=run_worker, daemon=True).start()
 
     def on_abort():
         stop_event.set()
