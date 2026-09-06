@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0 — 2026-09-06 (pre-release)
+
+- Start stage 4 with shared headless PDF extraction, retry/reanalysis, naming and configuration modules. Keep the desktop workflow on the same services; isolate Gemini requests and response normalization in an adapter.
+- Add CLI run (preview by default, `--apply` to rename), continue, status/CSV and undo. Preserve schema checks, academic review rules, cache reuse, changed-file checks, conflict holds and cancellation checkpoints.
+- Keep CLI latest-batch state separate from GUI state while sharing extraction cache and durable undo history. Expose frozen naming settings, page/model controls, force refresh, recursive input, UTF-8 JSON results, X / total progress and documented exit codes.
+- Add a Windows console executable and checksum alongside the desktop build, with packaged `--version`/`--help` smoke checks. Source CLI works without Tk or a display on supported platforms.
+- Add 15 offline CLI/config integration tests; total 170 tests (169 passed locally, one Windows symlink-permission skip). Real Gemini/PDF acceptance remains deferred. Additional model providers and local metadata extraction remain future work driven by demand.
+
 ## 1.3.0 — 2026-09-06 (pre-release)
 
 - Complete stage 3 implementation: structured compound surnames and institutional authors, conservative capitalization, configurable journal aliases and document-version year selection.

@@ -41,20 +41,25 @@ def main():
             strings.get('FileVersion') != version or strings.get('ProductVersion') != version):
         raise SystemExit('Update version_info.txt to match VERSION.txt before building.')
 
-    subprocess.run([
-        sys.executable, '-m', 'PyInstaller', '--noconfirm', '--onefile', '--windowed',
-        '--name', 'PaperDF', '--icon', 'assets/icon.ico',
-        '--add-data', 'assets/icon.png;assets', '--add-data', 'VERSION.txt;.',
-        '--version-file', 'version_info.txt', 'pdf_metadata_renamer.py',
-    ], cwd=ROOT, check=True)
-    target = ROOT / 'dist' / f'PaperDF-v{version}-windows.exe'
-    shutil.copy2(ROOT / 'dist' / 'PaperDF.exe', target)
-    with target.open('rb') as stream:
-        digest = hashlib.sha256()
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    target.with_suffix('.exe.sha256').write_text(f'{digest.hexdigest()}  {target.name}\n', encoding='utf-8')
-    print(f'Built {target}\nSHA-256: {digest.hexdigest()}')
+    for name, entrypoint, mode in [('PaperDF', 'pdf_metadata_renamer.py', '--windowed'),
+                                   ('PaperDF-cli', 'paperdf_cli.py', '--console')]:
+        subprocess.run([
+            sys.executable, '-m', 'PyInstaller', '--noconfirm', '--onefile', mode,
+            '--name', name, '--icon', 'assets/icon.ico',
+            '--add-data', 'assets/icon.png;assets', '--add-data', 'VERSION.txt;.',
+            '--version-file', 'version_info.txt', entrypoint,
+        ], cwd=ROOT, check=True)
+        target = ROOT / 'dist' / f'{name}-v{version}-windows.exe'
+        shutil.copy2(ROOT / 'dist' / f'{name}.exe', target)
+        with target.open('rb') as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        target.with_suffix('.exe.sha256').write_text(f'{digest.hexdigest()}  {target.name}\n', encoding='utf-8')
+        print(f'Built {target}\nSHA-256: {digest.hexdigest()}')
+        if name.endswith('-cli'):
+            subprocess.run([str(target), '--version'], check=True)
+            subprocess.run([str(target), '--help'], check=True)
 
 
 if __name__ == '__main__':

@@ -12,33 +12,24 @@
 # - App/window icon support (dev + PyInstaller onefile)
 
 import os
-import io
 import sys
 import logging
-import json
 import threading
 import tempfile
-import configparser
-import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from tkinter import PhotoImage
 
-from dotenv import load_dotenv
 from PyPDF2 import PdfReader, PdfWriter
 
 # Google AI Studio SDK (pip install google-genai)
 from google import genai
-from google.genai import types
 from paperdf_preview import ResultsPanel
 from paperdf_processing import can_retry_extraction, process_rows
 from paperdf_session import BatchStore, can_continue, validate_rows
 from paperdf_workflow import fingerprint_file
 from paperdf_cache import ExtractionCache
-from paperdf_schema import parse_metadata
-from paperdf_academic import (parse_name, author_components, title_style, canonical_journal, parse_aliases,
-                              DEFAULT_ALIASES, AUTHOR_KINDS, DOCUMENT_KINDS, DATE_KINDS,
-                              select_year, academic_review_reasons, compact)
+from paperdf_academic import parse_aliases, DEFAULT_ALIASES
 
 # Branding
 APP_NAME = "PaperDF"  # Paper Document Formatter
@@ -83,36 +74,20 @@ ENV_FILENAME = 'pdf_metadata_renamer.env'
 CONFIG_FILENAME = 'pdf_metadata_renamer.config'
 ENV_SUBDIR = 'pdfrenamer'
 
-HOME_DIR = os.path.expanduser('~')
-LOCALAPPDATA_DIR = os.getenv('LOCALAPPDATA', HOME_DIR)
-STORE_DIR = os.path.join(LOCALAPPDATA_DIR, ENV_SUBDIR)
-os.makedirs(STORE_DIR, exist_ok=True)
+from paperdf_config import default_store_dir, load_config, api_key_for
+STORE_DIR = str(default_store_dir())
 ENV_PATH = os.path.join(STORE_DIR, ENV_FILENAME)
 CONFIG_PATH = os.path.join(STORE_DIR, CONFIG_FILENAME)
-
-# Load environment variables if present
-if os.path.exists(ENV_PATH):
-    load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 # =========================
 # Defaults & constants
 # =========================
 API_KEY = os.getenv('GEMINI_API_KEY', '')
-DEFAULT_MODEL = 'gemini-2.5-flash-lite'   # default model
+from paperdf_defaults import (DEFAULT_MODEL, INVALID_FILENAME_CHARS, DEFAULT_OUTPUT_PATTERN,
+                               DEFAULT_BOOK_OUTPUT_PATTERN, DEFAULT_UNPUBLISHED, DEFAULT_PAPER_PAGES,
+                               DEFAULT_BOOK_PAGES, MAX_PAGES_TO_EXTRACT, DEFAULT_AUTHOR_FMT_PAPER,
+                               DEFAULT_AUTHOR_FMT_BOOK)
 MODEL_NAME = DEFAULT_MODEL
-
-INVALID_FILENAME_CHARS = '<>:"/\\|?*'
-DEFAULT_OUTPUT_PATTERN = '{journal} - {year} - {authors} - {title}.pdf'
-# Default book template as requested
-DEFAULT_BOOK_OUTPUT_PATTERN = '{authors} - {title} - {journal} ({year}).pdf'
-DEFAULT_UNPUBLISHED = 'Unpublished'
-DEFAULT_PAPER_PAGES = 4
-DEFAULT_BOOK_PAGES = 20
-MAX_PAGES_TO_EXTRACT = 50
-
-# Author format defaults
-DEFAULT_AUTHOR_FMT_PAPER = '{surname}'
-DEFAULT_AUTHOR_FMT_BOOK = '{surname}, {first_initial}.'
 
 # Detect first run (no config file yet)
 FIRST_RUN = not os.path.exists(CONFIG_PATH)
@@ -120,20 +95,13 @@ FIRST_RUN = not os.path.exists(CONFIG_PATH)
 # =========================
 # Load or initialize config
 # =========================
-config = configparser.ConfigParser(interpolation=None)
-if os.path.exists(CONFIG_PATH):
-    try:
-        config.read(CONFIG_PATH, encoding='utf-8')
-    except UnicodeDecodeError:
-        config.read(CONFIG_PATH)  # pre-1.3 settings used the platform encoding
-if 'Settings' not in config:
-    config['Settings'] = {}
+config = load_config(STORE_DIR)
 settings = config['Settings']
 
 OUTPUT_PATTERN = settings.get('output_pattern', DEFAULT_OUTPUT_PATTERN)
 BOOK_OUTPUT_PATTERN = settings.get('book_output_pattern', DEFAULT_BOOK_OUTPUT_PATTERN)
 UNPUBLISHED_PLACEHOLDER = settings.get('unpublished', DEFAULT_UNPUBLISHED)
-API_KEY = settings.get('api_key', API_KEY)
+API_KEY = api_key_for(STORE_DIR, settings)
 MODEL_NAME = settings.get('model', MODEL_NAME)
 
 # Separate author formats
@@ -584,505 +552,56 @@ def show_setup_guide(root):
 # =========================
 # PDF extraction
 # =========================
-def extract_first_n_pages(pdf_path: str, n: int) -> bytes:
-    if n < 1:
-        raise ValueError('Pages to extract must be at least 1.')
-    reader = PdfReader(pdf_path)
-    writer = PdfWriter()
-    page_count = min(n, len(reader.pages))
-    for page in reader.pages[:page_count]:
-        writer.add_page(page)
-    buf = io.BytesIO()
-    writer.write(buf)
-    buf.seek(0)
-    return buf.read()
-
-def _metadata_text(value) -> str:
-    if value is None:
-        return ''
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (int, float)):
-        return str(value).strip()
-    if isinstance(value, list):
-        for item in value:
-            text = _metadata_text(item)
-            if text:
-                return text
-        return ''
-    if isinstance(value, dict):
-        for key in ('value', 'name', 'text', 'title', 'journal', 'publisher', 'year'):
-            text = _metadata_text(value.get(key))
-            if text:
-                return text
-        return ''
-    return str(value).strip()
-
-def _author_name(value) -> str:
-    if isinstance(value, dict):
-        for key in ('name', 'full_name', 'full', 'author'):
-            text = _metadata_text(value.get(key))
-            if text:
-                return text
-        parts = [
-            _metadata_text(value.get('first')),
-            _metadata_text(value.get('middle')),
-            _metadata_text(value.get('surname') or value.get('last') or value.get('family')),
-        ]
-        suffix = _metadata_text(value.get('suffix'))
-        if suffix:
-            parts.append(suffix)
-        return ' '.join(part for part in parts if part).strip()
-    return _metadata_text(value)
-
-def _metadata_authors(value) -> list:
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [name for name in (_author_name(item) for item in value) if name]
-    if isinstance(value, dict):
-        name = _author_name(value)
-        return [name] if name else []
-    text = _metadata_text(value)
-    if not text:
-        return []
-    separator = ';' if ';' in text else ','
-    return [author.strip() for author in text.split(separator) if author.strip()]
-
-# =========================
-# Gemini metadata extraction
-# =========================
-_EVIDENCE_FIELDS = ('authors', 'year', 'journal', 'title')
+# Shared headless services; GUI wrappers supply the current settings and callbacks.
+import paperdf_core as core
+import paperdf_naming as naming_service
+from paperdf_core import extract_first_n_pages
+from paperdf_gemini import (_metadata_text, _author_name, _metadata_authors, _snippet_page_count,
+                            _metadata_output_schema, _normalize_evidence, _metadata_all_empty,
+                            _LazyGeminiClient, get_metadata_from_snippet as gemini_metadata)
+from paperdf_naming import _parse_author, _initial, _middle_initials, _render_author
 
 
-def _snippet_page_count(pdf_bytes: bytes):
-    """Count physical pages without preventing upload cleanup on malformed input."""
-    try:
-        return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
-    except Exception:
-        return None
+def get_metadata_from_snippet(pdf_bytes, is_book, sdk_client=None, model=None):
+    return gemini_metadata(pdf_bytes, is_book, sdk_client or client, model or MODEL_NAME)
 
 
-def _metadata_output_schema(page_count=None):
-    page_schema = {'type': 'integer', 'minimum': 1}
-    if page_count:
-        page_schema['maximum'] = page_count
-    citation_schema = {
-        'type': 'object',
-        'properties': {
-            'page': page_schema,
-            'quote': {'type': 'string', 'description': 'Exact visible text, 1-500 characters'},
-        },
-        'required': ['page', 'quote'],
-        'additionalProperties': False,
-    }
-    return {
-        'type': 'object',
-        'properties': {
-            'authors': {'type': 'array', 'items': {'type': 'string'}},
-            'year': {'type': 'string'},
-            'journal': {'type': 'string'},
-            'title': {'type': 'string'},
-            'academic': {
-                'type': 'object',
-                'properties': {
-                    'document_kind': {'type': 'string', 'enum': list(DOCUMENT_KINDS)},
-                    'author_details': {'type': 'array', 'items': {
-                        'type': 'object', 'properties': {
-                            'literal': {'type': 'string'}, 'kind': {'type': 'string', 'enum': list(AUTHOR_KINDS)},
-                            'given': {'type': 'string'}, 'family': {'type': 'string'}, 'suffix': {'type': 'string'}},
-                        'required': ['literal', 'kind', 'given', 'family', 'suffix'], 'additionalProperties': False}},
-                    'dates': {'type': 'array', 'items': {
-                        'type': 'object', 'properties': {
-                            'kind': {'type': 'string', 'enum': list(DATE_KINDS)}, 'year': {'type': 'string'},
-                            'page': page_schema, 'quote': {'type': 'string', 'description': 'Exact date passage, 1-500 characters'}},
-                        'required': ['kind', 'year', 'page', 'quote'], 'additionalProperties': False}}},
-                'required': ['document_kind', 'author_details', 'dates'], 'additionalProperties': False},
-            'evidence': {
-                'type': 'object',
-                'properties': {
-                    field: {'type': 'array', 'items': citation_schema}
-                    for field in _EVIDENCE_FIELDS
-                },
-                'required': list(_EVIDENCE_FIELDS),
-                'additionalProperties': False,
-            },
-        },
-        'required': [*_EVIDENCE_FIELDS, 'evidence', 'academic'],
-        'additionalProperties': False,
-    }
-
-
-def _normalize_evidence(value, page_count):
-    """Keep usable model citations; these are navigation aids, not verified facts."""
-    result = {field: [] for field in _EVIDENCE_FIELDS}
-    if not isinstance(value, dict) or not page_count:
-        return result
-    aliases = {'author': 'authors', 'publisher': 'journal'}
-    for key, citations in value.items():
-        field = str(key).strip().lower()
-        field = aliases.get(field, field)
-        if field not in result or not isinstance(citations, list):
-            continue
-        for citation in citations:
-            if not isinstance(citation, dict):
-                continue
-            page = citation.get('page')
-            quote = citation.get('quote')
-            if type(page) is not int or not 1 <= page <= page_count:
-                continue
-            if not isinstance(quote, str) or not 1 <= len(quote.strip()) <= 500:
-                continue
-            normalized = {'page': page, 'quote': quote.strip()}
-            if normalized not in result[field]:
-                result[field].append(normalized)
-    return result
-
-
-def get_metadata_from_snippet(pdf_bytes: bytes, is_book: bool, sdk_client=None, model=None) -> dict:
-    sdk_client = sdk_client or client
-    page_count = _snippet_page_count(pdf_bytes)
-    upload_config = types.UploadFileConfig(display_name='snippet.pdf', mime_type='application/pdf')
-    snippet_file = None
-    try:
-        snippet_file = sdk_client.files.upload(file=io.BytesIO(pdf_bytes), config=upload_config)
-        document_instruction = (
-            'This is a book: journal must contain the Publisher, not a journal name. '
-            if is_book else 'This is an academic paper: journal is the journal name, if present. '
-        )
-        system_instruction = (
-            'You are an academic document manager. '
-            'Read all supplied pages and extract Authors, Year, Journal, Title. '
-            + document_instruction +
-            'If a field is NOT clearly present, return it EMPTY ("" or []); DO NOT GUESS or fabricate. '
-            'Return strict JSON with authors (array of full names), year (string), journal (string), '
-            'title (string), and evidence (object). Evidence has keys authors, year, journal, title, '
-            'each holding an array of {"page": integer, "quote": string}. '
-            'For each field, cite a short exact original text fragment visibly present in this PDF '
-            'and its 1-based physical page position in the supplied PDF. Count from the first '
-            'supplied page, ignoring printed page numbers, including Roman numerals. '
-            'Metadata can occur on later supplied pages, not just the first page. '
-            'Keep quotes in their original wording, spelling, and capitalization, at most 500 characters. '
-            'Do not invent, paraphrase, or translate quotes. Do not fabricate page numbers. '
-            'If you cannot locate evidence for a field, return an empty evidence array for that field. '
-            'For books, cite the publisher under evidence.journal. '
-            'An empty evidence array is allowed even when a metadata field was extracted. '
-            'Also return academic with document_kind, author_details and dates. '
-            'Preserve source capitalization, accents, hyphens and acronyms in names, title and journal. '
-            'author_details aligns one-to-one with authors: literal is the same full name; kind is person, '
-            'organization or unknown. For a person give given, family (including every surname particle '
-            'and compound family-name component) and suffix. Never shorten an institutional author. '
-            'For organizations and unknown authors leave given/family/suffix empty. If a personal name '
-            'cannot be split reliably, leave family empty instead of guessing. Affiliations are not authors. '
-            'document_kind is published_article, preprint, book or unknown for this actual document. '
-            'dates lists dates explicitly describing this document/version, never references: kind is '
-            'publication, online, revision, preprint, copyright, original, received, accepted, accessed '
-            'or other; give year (four digits), physical page and exact quote. Publication for a book '
-            'means the present edition, not an earlier original edition. Distinguish posted revisions '
-            'from journal publication, received/accepted dates and download/access stamps. '
-            'Do not infer publication merely from a journal name, DOI, affiliation or reference. '
-            'Return an empty dates array if no date is supported by a visible passage.'
-        )
-        response = sdk_client.models.generate_content(
-            model=model or MODEL_NAME,
-            contents=[system_instruction, snippet_file],
-            config=types.GenerateContentConfig(
-                response_mime_type='application/json',
-                response_json_schema=_metadata_output_schema(page_count),
-                system_instruction=system_instruction,
-            )
-        )
-        data = parse_metadata(response.text, page_count)
-        evidence_raw = data['evidence']
-    finally:
-        if snippet_file is not None:
-            snippet_name = getattr(snippet_file, 'name', None)
-            if snippet_name:
-                try:
-                    try:
-                        sdk_client.files.delete(name=snippet_name)
-                    except TypeError:
-                        sdk_client.files.delete(snippet_name)
-                except Exception as e:
-                    logging.warning(f"Failed to delete uploaded snippet '{snippet_name}': {e}")
-
-    raw_year = _metadata_text(data.get('year'))
-    year = 'n.d.' if (raw_year == '' or raw_year.lower() in {'unknown','unknownyear','n/a','na'}) else raw_year
-
-    authors = _metadata_authors(data.get('authors') or data.get('author'))
-    unknown_tokens = {'unknown','n/a','na','none','anonymous','unknown author','unknownauthors'}
-    authors = [a for a in authors if a.strip() and a.strip().lower() not in unknown_tokens]
-    authors = [compact(a) for a in authors]
-
-    jraw = data.get('journal') or data.get('publisher')
-    journal = _metadata_text(jraw)
-    if journal.lower() in unknown_tokens:
-        journal = ''
-    journal = compact(journal)
-
-    title = _metadata_text(data.get('title'))
-    if title.lower() in unknown_tokens or title.lower() == 'unknowntitle':
-        title = ''
-    title = compact(title)
-    academic = data['academic']
-    academic['author_details'] = [item for item in academic['author_details'] if compact(item['literal']) in authors]
-    year = select_year(academic)[0] or 'n.d.'
-
-    return {
-        'authors': authors, 'year': year, 'journal': journal, 'title': title,
-        'evidence': _normalize_evidence(evidence_raw, page_count), 'academic': academic,
-    }
-
-def _metadata_all_empty(meta: dict) -> bool:
-    authors = meta.get('authors') or []
-    authors_norm = [((a or '').strip().lower()) for a in authors]
-    authors_empty = (len(authors_norm) == 0) or all(a == '' or a in ('unknownauthors', 'unknown author', 'unknown') for a in authors_norm)
-    year = (meta.get('year') or '').strip().lower()
-    year_empty = year in ('', 'n.d.', 'nd', 'unknown', 'unknownyear')
-    journal_empty = ((meta.get('journal') or '').strip() == '')
-    title_val = (meta.get('title') or '').strip()
-    title_empty = (title_val == '' or title_val.lower() == 'unknowntitle')
-    return authors_empty and year_empty and journal_empty and title_empty
-
-# =========================
-# Author formatting
-# =========================
-def _parse_author(full: str):
-    return parse_name(full)
-
-def _initial(s: str) -> str:
-    return '.-'.join(part[0].upper() for part in s.split('-') if part)
-
-def _middle_initials(m: str) -> str:
-    if not m: return ''
-    tokens = [t for t in m.split() if t]
-    return ' '.join([_initial(t) + '.' for t in tokens])
-
-def _render_author(fmt: str, comps: dict) -> str:
-    tokens = {
-        'first': comps.get('first', ''),
-        'middle': comps.get('middle', ''),
-        'surname': comps.get('surname', ''),
-        'last': comps.get('surname', ''),
-        'family': comps.get('surname', ''),
-        'suffix': comps.get('suffix', ''),
-        'first_initial': _initial(comps.get('first', '')),
-        'surname_initial': _initial(comps.get('surname', '')),
-        'middle_initials': _middle_initials(comps.get('middle', '')),
-    }
-    out = fmt
-    for k, v in tokens.items():
-        out = out.replace('{' + k + '}', v)
-    out = re.sub(r'\s+', ' ', out).strip()
-    out = re.sub(r'\s+,', ',', out); out = re.sub(r',\s*,', ',', out)
-    out = re.sub(r'\(\s*\)', '', out); out = re.sub(r'\s+\.', '.', out)
-    out = out.strip(' ,')
-    return out
-
-def format_authors_list(authors_list, is_book: bool, author_format=None, author_details=None) -> str:
+def format_authors_list(authors_list, is_book, author_format=None, author_details=None):
     fmt = author_format if author_format is not None else (AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER)
-    if not authors_list:
-        return 'UnknownAuthors'
-    rendered = []
-    for full in authors_list:
-        comps = author_components(full, author_details or [])
-        s = compact(full) if comps is None else _render_author(fmt, comps)
-        if s:
-            rendered.append(s)
-    return ', '.join(rendered) if rendered else 'UnknownAuthors'
-
-# =========================
-# Filename builder
-# =========================
-def build_new_filename(meta: dict, is_book: bool = False, naming_settings=None) -> str:
-    naming = naming_settings or {}
-    aliases = naming.get('journal_aliases', '' if naming_settings is not None else JOURNAL_ALIASES)
-    style = naming.get('title_style', 'preserve' if naming_settings is not None else TITLE_STYLE)
-    journal = canonical_journal(meta.get('journal', ''), aliases, is_book)
-    journal = journal or naming.get('unpublished', UNPUBLISHED_PLACEHOLDER)
-    authors_str = format_authors_list(meta.get('authors', []), is_book, naming.get('author_format'), meta.get('academic', {}).get('author_details'))
-    pattern = naming.get('pattern', BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN)
-    filename = pattern.format(
-        journal=journal,
-        year=meta.get('year','n.d.'),
-        authors=authors_str,
-        title=title_style(meta.get('title','UnknownTitle'), style)
-    )
-    cleaned = ''.join(c for c in filename if c not in INVALID_FILENAME_CHARS)
-    return ' '.join(cleaned.split()).strip()
-
-# =========================
-# Read-only preview extraction
-# =========================
-def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None,
-                    cache=None, force=False):
-    import uuid
-
-    rows = []
-    unique = {}
-    for path in file_list:
-        absolute = os.path.abspath(path)
-        unique.setdefault(os.path.normcase(absolute), absolute)
-    for index, path in enumerate(unique.values(), 1):
-        if cancelled():
-            break
-        row = {
-            'source': path, 'original_source': path, 'metadata': {}, 'selected': False,
-            'fingerprint': '', 'status': 'Error', 'needs_review': True,
-            'snippet_path': '', 'page_count': 0, 'is_book': bool(is_book),
-            'analysis_attempted': True,
-            'requested_pages': pages,
-            'resume_action': 'extract',
-        }
-        context = None
-        try:
-            row['fingerprint'] = fingerprint_file(path)
-            context = ExtractionCache.context(row['fingerprint'], pages, is_book, model or MODEL_NAME)
-            cached = cache.get(context) if cache is not None and not force else None
-            if cached is not None:
-                row['metadata'], snippet, row['page_count'] = cached
-                row['extraction_source'] = 'cache'
-            else:
-                snippet = extract_first_n_pages(path, pages)
-                row['page_count'] = _snippet_page_count(snippet) or 0
-                if not row['page_count']:
-                    raise ValueError('PDF has no readable pages to extract.')
-                row['extraction_source'] = 'model'
-            if review_dir is not None:
-                os.makedirs(review_dir, exist_ok=True)
-                snapshot = os.path.join(os.path.abspath(review_dir), f'{uuid.uuid4().hex}.pdf')
-                with open(snapshot, 'xb') as stream:
-                    stream.write(snippet)
-                row['snippet_path'] = snapshot
-            if cached is None:
-                if isinstance(sdk_client, _LazyGeminiClient):
-                    sdk_client.ensure()
-                row['metadata'] = get_metadata_from_snippet(snippet, is_book, sdk_client, model)
-            if fingerprint_file(path) != row['fingerprint']:
-                raise ValueError('File contents changed during extraction; retry with the current file.')
-            if cache is not None:
-                if cached is None:
-                    cache.put(context, row['metadata'], snippet, row['page_count'])
-                cache.record(context, path, 'cache_hit' if cached is not None else 'extracted')
-            missing = []
-            if not _metadata_text(row['metadata'].get('title')):
-                missing.append('title')
-            if not _metadata_authors(row['metadata'].get('authors')):
-                missing.append('authors')
-            if not re.fullmatch(r'[1-9]\d{3}', _metadata_text(row['metadata'].get('year'))):
-                missing.append('year (four digits)')
-            academic_issues = academic_review_reasons(row['metadata'])
-            row['needs_review'] = bool(missing or academic_issues)
-            row['selected'] = not row['needs_review']
-            row['status'] = 'Needs review' if row['needs_review'] else 'Extracted'
-            if row['needs_review']:
-                row.pop('resume_action', None)
-            else:
-                row['resume_action'] = 'rename'
-            row['reason'] = 'Missing required metadata: ' + ', '.join(missing) + '.' if missing else ''
-            row['reason'] = ' '.join(filter(None, [row['reason'], *academic_issues]))
-            if row['needs_review']:
-                row['message'] = row['reason']
-        except Exception as exc:
-            if isinstance(sdk_client, _LazyGeminiClient) and sdk_client.error is not None:
-                row['analysis_attempted'] = False
-            if force:
-                row['force_refresh'] = True
-            if cache is not None and context is not None:
-                try:
-                    cache.record(context, path, 'failed', type(exc).__name__)
-                except Exception:
-                    logging.warning('Could not record extraction failure', exc_info=True)
-            row['extraction_error'] = str(exc)
-            row['message'] = str(exc)
-            row['reason'] = 'Extraction failed: ' + str(exc)
-        rows.append(row)
-        on_progress(index, len(unique), row)
-    return rows
+    return naming_service.format_authors_list(authors_list, is_book, fmt, author_details)
 
 
-def retry_failed_extractions(rows, pages, is_book, sdk_client, model, cancelled, on_progress,
-                             review_dir=None):
-    """Refresh failed rows in place, keeping the full batch and original paths."""
-    failed = [row for row in rows if can_retry_extraction(row)]
-    return extract_rows(failed, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir)
+def build_new_filename(meta, is_book=False, naming_settings=None):
+    naming = {'pattern': BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN,
+              'author_format': AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER,
+              'unpublished': UNPUBLISHED_PLACEHOLDER,
+              'title_style': TITLE_STYLE if naming_settings is None else 'preserve',
+              'journal_aliases': JOURNAL_ALIASES if naming_settings is None else ''}
+    naming.update(naming_settings or {})
+    return naming_service.build_new_filename(meta, is_book, naming)
+
+
+def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_progress,
+                    review_dir=None, cache=None, force=False):
+    return core.prepare_preview(file_list, pages, is_book, sdk_client, model or MODEL_NAME,
+                                cancelled, on_progress, review_dir, cache, force,
+                                extractor=get_metadata_from_snippet)
 
 
 def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None, cache=None):
-    """Extract a selected subset of a durable manifest, preserving its file IDs."""
-    retried = []
-    for index, row in enumerate(rows, 1):
-        if cancelled():
-            break
-        fresh = prepare_preview([row['source']], row.get('requested_pages', pages), is_book, sdk_client, model,
-                                cancelled, lambda *args: None, review_dir=review_dir, cache=cache,
-                                force=row.get('force_refresh', False))
-        if not fresh:
-            break
-        original_source = row.get('original_source', row['source'])
-        stale_keys = set(row) - set(fresh[0]) - {'original_source', 'row_id'}
-        row.update(fresh[0], original_source=original_source)
-        for key in stale_keys:
-            row.pop(key, None)
-        retried.append(row)
-        on_progress(index, len(rows), row)
-    return retried
+    return core.extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress,
+                             review_dir, cache, preview=prepare_preview)
+
+
+def retry_failed_extractions(rows, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None):
+    return extract_rows([row for row in rows if can_retry_extraction(row)], pages, is_book,
+                        sdk_client, model, cancelled, on_progress, review_dir)
 
 
 def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=None, cache=None):
-    """Replace one result only after a successful fresh extraction; never rename."""
-    if type(pages) is not int or not 1 <= pages <= MAX_PAGES_TO_EXTRACT:
-        raise ValueError(f'Pages must be between 1 and {MAX_PAGES_TO_EXTRACT}.')
-    if row.get('pending_move') or row.get('status') == 'Recovery needed':
-        raise ValueError('Resolve the interrupted move before reanalyzing this file.')
-    fresh = prepare_preview([row['source']], pages, is_book, sdk_client, model,
-                            cancelled, lambda *args: None, review_dir, cache=cache, force=True)
-    if not fresh:
-        return False
-    replacement = fresh[0]
-    if replacement.get('extraction_error'):
-        raise ValueError('Reanalysis failed; previous result kept. ' + replacement['extraction_error'])
-    if fingerprint_file(row['source']) != replacement['fingerprint']:
-        raise ValueError('File contents changed during reanalysis; previous result kept.')
-    replacement['original_source'] = row.get('original_source', row['source'])
-    if 'row_id' in row:
-        replacement['row_id'] = row['row_id']
-    replacement.update(status='Needs review', needs_review=True, selected=False,
-                       message='Reanalysis completed. Review the new metadata and apply a correction when ready.')
-    replacement.pop('resume_action', None)
-    row.clear()
-    row.update(replacement)
-    return True
+    return core.reanalyze_row(row, pages, is_book, sdk_client, model, cancelled,
+                              review_dir, cache, preview=prepare_preview)
 
-# =========================
-# Main GUI
-# =========================
-class _LazyGeminiClient:
-    """Allow cache-only batches without credentials or a provider connection."""
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.instance = None
-        self.error = None
-
-    def ensure(self):
-        if self.error is not None:
-            raise self.error
-        if self.instance is None:
-            try:
-                if not self.api_key:
-                    raise ValueError('Set your Gemini API key in Config → Settings for uncached files.')
-                self.instance = genai.Client(api_key=self.api_key)
-            except Exception as exc:
-                self.error = exc
-                raise
-        return self.instance
-
-    def __getattr__(self, name):
-        return getattr(self.ensure(), name)
-
-    def close(self):
-        if self.instance is not None:
-            self.instance.close()
 
 def main():
     global selected_files, files_entry, folder_entry

@@ -1,6 +1,6 @@
 # PaperDF — Paper Document Formatter
 
-Current source version: **1.3.0** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
+Current source version: **1.4.0** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
 
 **PaperDF** renames large batches of academic PDFs using AI-extracted metadata from the first pages.  
 It reads the first several pages of each file, asks Gemini to extract **Authors / Year / Journal (or Publisher) / Title**, and renames files according to your templates. Files needing attention stay unchanged. When you want to check a result, read the same analyzed pages alongside its metadata, correct it locally, and apply the correction. Any rename batch can be undone.
@@ -18,6 +18,7 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
 
 ## Key features
 
+- **Headless CLI:** preview, apply, continue, inspect/export and undo batches without a graphical environment. Windows includes a separate console executable. See [CLI usage](docs/cli.md) and [module architecture](docs/architecture.md).
 - **AI metadata extraction (Gemini):** reads **only the first N pages** per file; sends that snippet to Gemini for structured JSON.
 - **Two modes:** paper vs. book. For books, “journal” is treated as **publisher**.
 - **Custom filename templates:** separate templates for papers vs. books.
@@ -67,7 +68,7 @@ pip install -r requirements.txt
 Prefer a one-click setup? Download the **standalone build** from the **GitHub Releases** page of this repository.
 
 - No Python or dependencies required.
-- Just run the single-file app (e.g., **PaperDF-v1.3.0-windows.exe** on Windows).
+- Just run the single-file app (e.g., **PaperDF-v1.4.0-windows.exe** on Windows).
 - On first launch, open **Config → Settings…**, paste your **Gemini API key**, review templates, and save.
 - Everything else works the same as the source version.
 
@@ -340,7 +341,7 @@ python -m pip install -r requirements.txt pyinstaller
 python scripts/build_windows.py
 ```
 
-This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.3.0-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+This creates desktop `dist/PaperDF-v1.4.0-windows.exe` and console `dist/PaperDF-cli-v1.4.0-windows.exe`, each with an `.exe.sha256` checksum (plus unversioned build copies). The console build is smoke-tested with `--version` and `--help`. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
 
 When changing extraction prompts, response validation or normalization, bump `EXTRACTION_RULES_VERSION` in `paperdf_cache.py` to invalidate older extraction entries. Naming-only changes do not require invalidation. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for roadmap scope and verification boundaries.
 

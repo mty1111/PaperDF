@@ -70,6 +70,8 @@ jobs:
           path: |
             dist/PaperDF-${{ steps.ver.outputs.version }}-windows.exe
             dist/PaperDF-${{ steps.ver.outputs.version }}-windows.exe.sha256
+            dist/PaperDF-cli-${{ steps.ver.outputs.version }}-windows.exe
+            dist/PaperDF-cli-${{ steps.ver.outputs.version }}-windows.exe.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -168,7 +170,7 @@ jobs:
           body: |
             Pre-release build for ${{ needs.build.outputs.version }}.
 
-            Completes stage 3: structured compound surnames and institutional authors, preserved title capitalization with an optional title-case style, configurable journal aliases, and document-version year selection. Review name parts and dated sources locally; ambiguous names or dates stay unchanged. Extended schema and versioned cache rules preserve the new academic metadata through retry, continuation, correction and undo.
+            Starts stage 4 with shared headless extraction, naming and configuration modules, plus a CLI for previewing, applying, continuing, reporting and undoing batches. GUI and CLI reuse the same strict schema, cache and file-operation policies. Includes a separate Windows console executable; Python CLI usage is available on all supported systems. Other model providers and local metadata extraction remain future work driven by demand.
 
             Real Gemini/PDF acceptance testing is deferred. Automated checks use synthetic PDFs and mocked provider responses; this pre-release is available for trial use.
             See CHANGELOG.md in the tagged source for changes and validation scope.

@@ -41,4 +41,6 @@ jobs:
           path: |
             dist/PaperDF-v*-windows.exe
             dist/PaperDF-v*-windows.exe.sha256
+            dist/PaperDF-cli-v*-windows.exe
+            dist/PaperDF-cli-v*-windows.exe.sha256
           if-no-files-found: error

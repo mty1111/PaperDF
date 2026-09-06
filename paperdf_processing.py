@@ -43,12 +43,8 @@ def record_results(rows, results):
             row['status'], row['needs_review'] = 'Stopped', True
 
 
-def process_rows(rows, build_name, journal_dir, should_stop=None, on_result=None, before_move=None):
-    """Rename complete, unambiguous rows as one undoable batch.
-
-    Missing fields and name collisions remain in the results for optional review.
-    This is a mechanical completeness check, not a confidence estimate.
-    """
+def plan_rows(rows, build_name, should_stop=None):
+    """Plan automatic-policy results without moving files or writing journals."""
     requests, expected = [], {}
     for row in rows:
         row.setdefault('original_source', row['source'])
@@ -88,6 +84,17 @@ def process_rows(rows, build_name, journal_dir, should_stop=None, on_result=None
         else:
             row.update(status='Stopped' if plan.status == 'cancelled' else 'Failed', needs_review=True,
                        resume_action='rename')
+
+    return ready, duplicates
+
+
+def process_rows(rows, build_name, journal_dir, should_stop=None, on_result=None, before_move=None):
+    """Rename complete, unambiguous rows as one undoable batch.
+
+    Missing fields and name collisions remain in the results for optional review.
+    This is a mechanical completeness check, not a confidence estimate.
+    """
+    ready, duplicates = plan_rows(rows, build_name, should_stop)
 
     def report(result):
         record_results(rows, [result])
