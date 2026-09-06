@@ -2,3 +2,5 @@ google-genai
 PyPDF2
 python-dotenv
 titlecase
+pypdfium2
+Pillow

@@ -31,16 +31,14 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: Build executable
-        shell: cmd
         run: |
-          pyinstaller --noconfirm --onefile --windowed ^
-            --name PaperDF ^
-            --icon=assets\icon.ico ^
-            --add-data "assets\icon.png;assets" ^
-            pdf_metadata_renamer.py
+          python scripts/build_windows.py
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: PaperDF-windows-exe
-          path: dist/PaperDF.exe
+          path: |
+            dist/PaperDF-v*-windows.exe
+            dist/PaperDF-v*-windows.exe.sha256
+          if-no-files-found: error
