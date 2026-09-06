@@ -1,10 +1,10 @@
 # PaperDF roadmap status
 
-## Current delivery: 1.4.0 local pre-release candidate
+## Current delivery: 1.4.0 pre-release
 
 Stages 2 and 3 implementation are complete; stage 4 has its first delivery (headless core and CLI); real Gemini/PDF acceptance remains deferred by user request. CI and release outcomes are recorded on the matching GitHub commit/tag; do not infer installation or real-provider validation from a successful package build.
 
-The stage 4 candidate is committed locally and has not been pushed or published. Automatic approval review rejected the attempted history amendment/default-branch push because this request did not explicitly authorize publishing to `main`. No history amendment or remote push occurred; file-ending cleanup was saved as a separate local commit. Remote CI for this candidate has not run. Publication awaits user authorization after local delivery verification.
+The user authorized pushing the stage 4 commits to `main` and publishing v1.4.0 on 2026-09-07. Release policy: require the matching commit's Windows/Linux/macOS tests and Windows build to pass before creating the release tag. Verify actual outcomes through [GitHub Actions](https://github.com/mty1111/PaperDF/actions) and the [v1.4.0 pre-release](https://github.com/mty1111/PaperDF/releases/tag/v1.4.0); release notes record the exact validation runs. Real Gemini/PDF acceptance remains deferred.
 
 | Stage | Status | Scope |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0 — 2026-09-06 (local pre-release candidate)
+## 1.4.0 — 2026-09-07 (pre-release)
 
 - Start stage 4 with shared headless PDF extraction, retry/reanalysis, naming and configuration modules. Keep the desktop workflow on the same services; isolate Gemini requests and response normalization in an adapter.
 - Add CLI run (preview by default, `--apply` to rename), continue, status/CSV and undo. Preserve schema checks, academic review rules, cache reuse, changed-file checks, conflict holds and cancellation checkpoints.
