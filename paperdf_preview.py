@@ -3,8 +3,9 @@ import copy
 import os
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+from paperdf_export import export_results
 from paperdf_processing import can_retry_extraction, correct_row, process_rows, record_results
 from paperdf_review import ReviewDialog
 from paperdf_session import can_continue, remember_move
@@ -41,6 +42,8 @@ class ResultsPanel(ttk.Frame):
         self.attention_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(heading, text='Needs attention only', variable=self.attention_only,
                         command=self._render).grid(row=0, column=1, sticky='e')
+        self.export_btn = ttk.Button(heading, text='Export all results...', command=self.export_all)
+        self.export_btn.grid(row=0, column=2, padx=(12, 0))
         self.tree = ttk.Treeview(self, columns=('title', 'authors', 'year', 'journal', 'status'),
                                  show='headings', selectmode='browse', height=10)
         for key, title, width in [('title', 'Title', 380), ('authors', 'Authors', 220),
@@ -76,6 +79,7 @@ class ResultsPanel(ttk.Frame):
 
     def set_enabled(self, enabled):
         self.busy = not enabled
+        self.export_btn.configure(state='normal' if enabled and self.rows else 'disabled')
         self.review_btn.configure(state='normal' if enabled and self.rows else 'disabled')
         self.reanalyze_btn.configure(state='normal' if enabled and self.rows and self.on_reanalyze else 'disabled')
         self.retry_btn.configure(state='normal' if enabled and self.on_retry and
@@ -87,6 +91,21 @@ class ResultsPanel(ttk.Frame):
     def continue_batch(self):
         if not self.busy and self.on_continue and any(can_continue(row) for row in self.rows):
             self.on_continue()
+
+    def export_all(self):
+        if self.busy or not self.rows:
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self, title='Export all batch results', initialfile='paperdf-results.csv',
+            defaultextension='.csv', filetypes=[('CSV report', '*.csv')])
+        if not destination:
+            return
+        try:
+            count = export_results(self.rows, destination)
+        except Exception as exc:
+            messagebox.showerror('Export failed', str(exc), parent=self)
+            return
+        self.log(f'Exported {count} file results to {destination}\n')
 
     def reanalyze_selected(self):
         row = self._focused_row()

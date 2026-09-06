@@ -357,6 +357,9 @@ Basic workflow:
    • “Stop” takes effect between files; an in-flight request finishes first.
    • Already completed renames remain undoable. The log shows results, skips, and errors.
    • Read the results by metadata and status; “Needs attention only” focuses on files requiring action.
+   • “Export all results...” saves every row in the current batch as a CSV, including rows hidden
+     by the attention filter. The report includes original/current paths, metadata, status, page
+     counts, and problem details. Export is available when processing is idle and makes no API request.
    • “Retry failed files” retries extraction errors only and keeps completed results and batch totals.
      It uses saved per-file page counts, mode, and naming settings, plus the current API key/model.
      A separate “Retrying: X / failed count” counter tracks this attempt. Successful retries are

@@ -168,7 +168,7 @@ jobs:
           body: |
             Pre-release build for ${{ needs.build.outputs.version }}.
 
-            Adds single-file reanalysis with a configurable first-page count. Successful results remain available for review before applying filename corrections; failed requests preserve the previous result. Batch counts, undo history, and per-file page settings are retained.
+            Adds CSV export of all current batch results, including original/current paths, metadata, statuses, page counts, and problem details. Reports preserve Unicode and multi-line fields, include filtered-out results, and make no model requests. Failed writes preserve existing reports.
 
             Real Gemini/PDF acceptance testing is deferred. Automated checks use synthetic PDFs and mocked provider responses; this pre-release is available for trial use.
             See CHANGELOG.md in the tagged source for changes and validation scope.

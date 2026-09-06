@@ -1,6 +1,7 @@
 """Offline integration checks for preview extraction and the actual Tk widgets."""
 import os
 import copy
+import csv
 import gc
 from pathlib import Path
 import queue
@@ -186,6 +187,52 @@ class ResultsWidgetTests(unittest.TestCase):
         self.panel.undo_btn.invoke()
         self.pump()
         self.assertEqual(row['status'], 'Needs review')
+
+    def test_export_includes_filtered_out_results_and_current_renamed_path(self):
+        normal, incomplete = self.row(), self.row('Second.pdf', '', b'second')
+        incomplete.update(needs_review=True, status='Needs review', message='Title missing')
+        self.load([normal, incomplete])
+        self.panel.attention_only.set(True)
+        self.panel._render()
+        self.assertEqual(self.panel.tree.get_children(), ('1',))
+        before = copy.deepcopy(self.panel.rows)
+        target = Path(self.temp.name) / 'report.csv'
+        with patch('paperdf_preview.filedialog.asksaveasfilename', return_value=str(target)):
+            self.panel.export_btn.invoke()
+        with target.open(encoding='utf-8-sig', newline='') as stream:
+            results = list(csv.DictReader(stream))
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]['current_path'], normal['source'])
+        self.assertEqual(Path(results[0]['original_path']).name, 'input.pdf')
+        self.assertEqual(results[1]['details'], 'Title missing')
+        self.assertEqual(self.panel.rows, before)
+        self.assertTrue(any('Exported 2 file results' in line for line in self.logs))
+
+    def test_export_cancel_and_busy_state_do_not_write_reports(self):
+        self.assertEqual(str(self.panel.export_btn['state']), 'disabled')
+        self.load([self.row()])
+        with patch('paperdf_preview.filedialog.asksaveasfilename', return_value='') as choose, \
+             patch('paperdf_preview.export_results') as export:
+            self.panel.export_btn.invoke()
+            choose.assert_called_once()
+            export.assert_not_called()
+            choose.reset_mock()
+            self.panel.set_enabled(False)
+            self.assertEqual(str(self.panel.export_btn['state']), 'disabled')
+            self.panel.export_all()
+            choose.assert_not_called()
+            export.assert_not_called()
+
+    def test_export_error_is_reported_without_changing_results(self):
+        self.load([self.row()])
+        before = copy.deepcopy(self.panel.rows)
+        with patch('paperdf_preview.filedialog.asksaveasfilename', return_value='report.csv'), \
+             patch('paperdf_preview.export_results', side_effect=PermissionError('File locked')):
+            self.panel.export_btn.invoke()
+        self.dialog_errors.assert_called_once()
+        self.assertEqual(self.dialog_errors.call_args.args, ('Export failed', 'File locked'))
+        self.assertEqual(self.panel.rows, before)
+        self.assertFalse(any('Exported' in line for line in self.logs))
 
     def test_stopped_extraction_does_not_start_auto_rename(self):
         row = self.row()

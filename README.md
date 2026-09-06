@@ -1,6 +1,6 @@
 # PaperDF — Paper Document Formatter
 
-Current source version: **1.1.1** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
+Current source version: **1.1.2** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
 
 **PaperDF** renames large batches of academic PDFs using AI-extracted metadata from the first pages.  
 It reads the first several pages of each file, asks Gemini to extract **Authors / Year / Journal (or Publisher) / Title**, and renames files according to your templates. Files needing attention stay unchanged. When you want to check a result, read the same analyzed pages alongside its metadata, correct it locally, and apply the correction. Any rename batch can be undone.
@@ -29,6 +29,7 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
 - **Reanalyze file...:** select one result and choose how many first pages to read in a new Gemini request. Review the new metadata before applying a correction; failed requests preserve the previous result.
 - **Continue after restarting:** the latest batch, metadata, and analyzed PDF pages are saved locally. Restore results on startup and use **Continue batch** to finish pending work, reusing unchanged files' metadata.
 - **Results organized by metadata:** inspect titles, authors, years, and status; use **Needs attention only** to focus on incomplete results or errors.
+- **CSV reports:** use **Export all results...** to save the full current batch, including original/current paths, metadata, statuses, page counts, and problem details.
 - **Optional document review:** open any result, including an already renamed file, and browse all the pages used for extraction alongside editable metadata. Flip pages, jump to a page, or zoom.
 - **Source locators:** when Gemini returns source pages and quoted passages, use them to find metadata in the document. These are model-provided navigation aids, not independently verified evidence.
 - **Local corrections:** edit metadata or enter a filename override without another model request. Each applied correction has its own undo batch.
@@ -63,7 +64,7 @@ pip install -r requirements.txt
 Prefer a one-click setup? Download the **standalone build** from the **GitHub Releases** page of this repository.
 
 - No Python or dependencies required.
-- Just run the single-file app (e.g., **PaperDF-v1.1.1-windows.exe** on Windows).
+- Just run the single-file app (e.g., **PaperDF-v1.1.2-windows.exe** on Windows).
 - On first launch, open **Config → Settings…**, paste your **Gemini API key**, review templates, and save.
 - Everything else works the same as the source version.
 
@@ -176,6 +177,12 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
    - Undo refuses to overwrite an occupied original path or restore a file whose contents have changed. Resolve the reported issue before retrying.
    - Review follows each restored file to its original path. The latest batch's saved results preserve these paths across restarts.
    - History is stored in `rename-history` under the app's config directory (shown in **About**). On Windows this is normally `%LOCALAPPDATA%\pdfrenamer\rename-history`; without `LOCALAPPDATA`, it is `~/pdfrenamer/rename-history`.
+
+10. **Export a batch report**
+   - When processing is idle, click **Export all results...** and choose a `.csv` destination. Every result in the current batch is included, even when **Needs attention only** hides successful rows.
+   - The report records original and current paths, title, authors, year, journal/publisher, status, attention flag, requested/analyzed page counts, and problem details. Unknown page counts are left blank.
+   - Reports use UTF-8 with BOM and preserve Chinese text and multi-line values. Formula-like cells are prefixed with an apostrophe so spreadsheet software treats them as text. A failed save leaves an existing report intact.
+   - Export records the results at that moment, makes no model request, and changes no PDF or undo history. Export again after further corrections or undo to obtain an updated report.
 
 ---
 
@@ -315,7 +322,7 @@ python -m pip install -r requirements.txt pyinstaller
 python scripts/build_windows.py
 ```
 
-This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.1-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.2-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
 
 ---
 
@@ -323,7 +330,6 @@ This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.1-windows.exe`, and its `.ex
 
 - Presets dropdown for common author styles (e.g., “Surname, F.”).  
 - Page-count overrides before starting a batch.
-- CSV export of processing results.
 
 ---
 

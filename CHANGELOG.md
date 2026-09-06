@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 — 2026-09-06 (pre-release)
+
+- Add **Export all results...** to save the current batch as a CSV report, including original/current paths, metadata, statuses, page counts, and problem details. Export includes rows hidden by the attention filter and makes no model requests.
+- Write UTF-8 with BOM for Unicode spreadsheet compatibility, preserve multi-line fields, and prefix formula-like cells as text. Failed writes preserve an existing report.
+- Add offline coverage for CSV contents, export cancellation, busy-state guards, filtered results, and failed saves. Real Gemini/PDF acceptance remains deferred.
+
 ## 1.1.1 — 2026-09-06 (pre-release)
 
 - Add **Reanalyze file...** to request a different first-page count for one result, including an already renamed file. Successful extraction replaces its metadata and analyzed-page snapshot for review; filename changes require an explicit correction.
