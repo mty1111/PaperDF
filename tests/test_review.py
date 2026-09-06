@@ -5,7 +5,6 @@ from pathlib import Path
 import queue
 import tempfile
 import threading
-import time
 import tkinter as tk
 from tkinter import ttk
 import unittest
@@ -149,13 +148,36 @@ class ReviewWidgetTests(unittest.TestCase):
         return dialog
 
     def pump_until(self, predicate):
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            self.root.update()
-            if predicate():
-                return
-            time.sleep(.01)
-        self.fail('Background PDF rendering did not complete')
+        # Use the application's event-loop entry point. Cocoa's nested update
+        # can keep draining native events without returning to the test deadline.
+        completed = []
+        errors = []
+        poll_id = None
+
+        def poll():
+            nonlocal poll_id
+            poll_id = None
+            try:
+                if predicate():
+                    completed.append(True)
+                    self.root.quit()
+                else:
+                    poll_id = self.root.after(10, poll)
+            except Exception as exc:
+                errors.append(exc)
+                self.root.quit()
+
+        timeout_id = self.root.after(10000, self.root.quit)
+        poll_id = self.root.after(10, poll)
+        try:
+            self.root.mainloop()
+        finally:
+            self.root.after_cancel(timeout_id)
+            if poll_id is not None:
+                self.root.after_cancel(poll_id)
+        if errors:
+            raise errors[0]
+        self.assertTrue(completed, 'PDF rendering or UI update did not complete')
 
     def test_no_evidence_still_allows_navigation_and_zoom(self):
         row = self.row()
@@ -187,7 +209,7 @@ class ReviewWidgetTests(unittest.TestCase):
         self.root.overrideredirect(True)
         self.root.geometry('10x10+20000+20000')
         self.root.deiconify()
-        self.root.update()
+        self.pump_until(lambda: self.root.winfo_ismapped())
         with patch.object(ReviewDialog, 'grab_set'):
             dialog = self.dialog()
         dialog.overrideredirect(True)
@@ -230,7 +252,7 @@ class ReviewWidgetTests(unittest.TestCase):
         dialog = self.dialog(row, callback)
         dialog.title_entry.delete('1.0', 'end')
         dialog.title_entry.insert('1.0', 'Corrected notes')
-        self.root.update()
+        self.pump_until(lambda: dialog.proposed_name.get() == 'Corrected notes.pdf')
         self.assertEqual(dialog.proposed_name.get(), 'Corrected notes.pdf')
         self.assertEqual(row, original)
         dialog.apply_button.invoke()
