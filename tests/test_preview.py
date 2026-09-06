@@ -370,6 +370,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(dialogs.call_count, 2)
         sdk.close.assert_called_once()
 
+    def test_reanalysis_selected_file_preserves_batch_and_undo(self):
+        meta = {'authors': ['Ada'], 'year': '2024'}
+        extraction = Mock(side_effect=[dict(meta, title=title) for title in ('First', 'Second', 'New title')])
+        with tempfile.TemporaryDirectory() as directory:
+            sources = self.make_sources(directory, 2)
+
+            def advance(state, panel, buttons, labels, widgets):
+                if state['phase'] == 'start':
+                    app.selected_files[:] = sources
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'processed'
+                elif state['phase'] == 'processed':
+                    state['other'] = copy.deepcopy(panel.rows[1])
+                    state['path'] = panel.rows[0]['source']
+                    panel.tree.selection_set('0')
+                    with patch.object(app.simpledialog, 'askinteger', return_value=None):
+                        panel.reanalyze_btn.invoke()
+                    self.assertEqual(extraction.call_count, 2)
+                    with patch.object(app.simpledialog, 'askinteger', return_value=3):
+                        panel.reanalyze_btn.invoke()
+                    self.assertEqual(str(panel.reanalyze_btn['state']), 'disabled')
+                    state['phase'] = 'reanalyzed'
+                elif state['phase'] == 'reanalyzed':
+                    self.assertEqual(extraction.call_count, 3)
+                    self.assertEqual(panel.rows[1], state['other'])
+                    self.assertEqual(panel.rows[0]['source'], state['path'])
+                    self.assertEqual(panel.rows[0]['page_count'], 3)
+                    self.assertEqual(panel.rows[0]['status'], 'Needs review')
+                    self.assertIn('Renamed: 2 / 2 files  ·  Analyzed: 2 / 2', labels)
+                    self.assertEqual(str(panel.continue_btn['state']), 'disabled')
+                    panel.apply_correction(panel.rows[0], panel.rows[0]['metadata'], '')
+                    state['phase'] = 'corrected'
+                elif state['phase'] == 'corrected':
+                    self.assertEqual(Path(panel.rows[0]['source']).name, 'New title.pdf')
+                    self.assertEqual(extraction.call_count, 3)
+                    panel.undo_btn.invoke()
+                    state['phase'] = 'undone'
+                elif state['phase'] == 'undone':
+                    self.assertEqual(panel.rows[0]['source'], state['path'])
+                    self.assertEqual(panel.rows[1], state['other'])
+                    self.assertIn('Renamed: 2 / 2 files  ·  Analyzed: 2 / 2', labels)
+                    state['phase'] = 'complete'
+                    return True
+
+            dialogs = self.run_retry_window(directory, advance, extraction, Mock(return_value=Mock()))
+            self.assertFalse(dialogs.called, dialogs.call_args)
+            saved = BatchStore(Path(directory) / 'batch-state').load()['rows']
+            self.assertEqual(saved[0]['requested_pages'], 3)
+
     def test_stop_during_retry_keeps_fresh_metadata_and_remaining_errors(self):
         meta = {'authors': ['Ada'], 'year': '2024', 'title': 'First'}
         attempts = []

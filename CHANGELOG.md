@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-09-06 (pre-release)
+
+- Add **Reanalyze file...** to request a different first-page count for one result, including an already renamed file. Successful extraction replaces its metadata and analyzed-page snapshot for review; filename changes require an explicit correction.
+- Keep the previous result on extraction failure, preserve batch totals and undo history, and save per-file page counts for later continuation.
+- Add offline regression coverage for single-file reanalysis, stopping, source changes, recovery guards, saved page counts, and correction/undo integration. Real Gemini/PDF acceptance remains deferred.
+
 ## 1.1.0 — 2026-09-06
 
 ### Batch processing and review

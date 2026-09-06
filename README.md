@@ -1,6 +1,6 @@
 # PaperDF — Paper Document Formatter
 
-Current source version: **1.1.0**. See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
+Current source version: **1.1.1** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
 
 **PaperDF** renames large batches of academic PDFs using AI-extracted metadata from the first pages.  
 It reads the first several pages of each file, asks Gemini to extract **Authors / Year / Journal (or Publisher) / Title**, and renames files according to your templates. Files needing attention stay unchanged. When you want to check a result, read the same analyzed pages alongside its metadata, correct it locally, and apply the correction. Any rename batch can be undone.
@@ -25,7 +25,8 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
 - **Embedded Cheatsheet (in Settings):** quick reference for all tokens and examples.
 - **Expanded Help (in Config → Help…):** how it works, end-to-end usage, rename logic, and troubleshooting.
 - **One-click processing:** automatically rename files with a title, authors, and a four-digit year. Missing journal/publisher information is allowed.
-- **Retry failed files:** retry extraction errors in the current results without rerunning completed files. Fix the API key or model in Settings, then retry with the batch's original page count, mode, and naming settings.
+- **Retry failed files:** retry extraction errors in the current results without rerunning completed files. Fix the API key or model in Settings, then retry with saved page counts, mode, and naming settings.
+- **Reanalyze file...:** select one result and choose how many first pages to read in a new Gemini request. Review the new metadata before applying a correction; failed requests preserve the previous result.
 - **Continue after restarting:** the latest batch, metadata, and analyzed PDF pages are saved locally. Restore results on startup and use **Continue batch** to finish pending work, reusing unchanged files' metadata.
 - **Results organized by metadata:** inspect titles, authors, years, and status; use **Needs attention only** to focus on incomplete results or errors.
 - **Optional document review:** open any result, including an already renamed file, and browse all the pages used for extraction alongside editable metadata. Flip pages, jump to a page, or zoom.
@@ -62,7 +63,7 @@ pip install -r requirements.txt
 Prefer a one-click setup? Download the **standalone build** from the **GitHub Releases** page of this repository.
 
 - No Python or dependencies required.
-- Just run the single-file app (e.g., **PaperDF-v1.1.0-windows.exe** on Windows).
+- Just run the single-file app (e.g., **PaperDF-v1.1.1-windows.exe** on Windows).
 - On first launch, open **Config → Settings…**, paste your **Gemini API key**, review templates, and save.
 - Everything else works the same as the source version.
 
@@ -143,7 +144,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 
 5. **Retry extraction failures when needed**
    - **Retry failed files** becomes available when the current results contain extraction errors, such as PDF read failures, network/API errors, invalid responses, or Gemini client setup failures. Completed or undone results, incomplete metadata, filename conflicts, and local rename failures are not retried.
-   - Correct your API key or model in **Config → Settings…** if needed, then click **Retry failed files**. Retry uses those current connection settings and the original batch's page count, paper/book mode, and naming settings.
+   - Correct your API key or model in **Config → Settings…** if needed, then click **Retry failed files**. Retry uses those current connection settings and the saved per-file page count (or original batch count), paper/book mode, and naming settings.
    - The full batch total and count of distinct analyzed files remain intact. A separate **Retrying: X / failed count** shows progress through the retry; repeated attempts do not count as additional analyzed files. Eligible recovered files are renamed automatically in a separate undo batch. Files that fail again remain retryable.
    - **Stop** takes effect between files. The in-flight extraction finishes, but stopping prevents automatic renaming of recovered results. Finish those files with **Continue batch** or **Review document...**; unattempted failures remain retryable.
 
@@ -161,6 +162,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
    - Browse the same saved PDF prefix used for extraction. It contains up to your configured N pages, or the whole document if shorter. Flip through every page, jump to a page, and zoom; the viewer is not limited to the first page.
    - Source quotations and **PDF page N** buttons, when available, help locate authors, year, journal/publisher, and title. Page numbers count PDF pages starting at 1, including covers and front matter; they are not the page labels printed inside the document.
    - Correct authors (one per line), year, journal/publisher, and title alongside the PDF. Missing source locators do not block review or correction.
+   - Select a result and choose **Reanalyze file...** to change its first-page count (1–50). It sends one new extraction request for that file. Success replaces its metadata and review pages for your inspection; its current filename is kept until you apply a correction. The chosen page count is saved, and failures keep the previous result.
 
 8. **Apply a correction**
    - Use **Apply correction** to save the edited metadata and apply the resulting name locally. An optional filename override must include `.pdf`.
@@ -255,7 +257,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 
 ## Notes on cost and privacy
 
-- Only the **first N pages** are sent to the model during **Process PDFs**, **Retry failed files**, or **Continue batch** when fresh extraction is needed. Reusing cached metadata makes no model request. The app attempts to delete each uploaded Gemini snippet when the extraction attempt finishes, including after errors.
+- Only the **first N pages** are sent to the model during **Process PDFs**, **Retry failed files**, **Reanalyze file...**, or **Continue batch** when fresh extraction is needed. Reusing cached metadata makes no model request. The app attempts to delete each uploaded Gemini snippet when the extraction attempt finishes, including after errors.
 - Costs depend on the selected model, document content, page count, and provider pricing. No benchmark or cost estimate is included here.
 - Scanned PDFs can be processed, but scan quality and model extraction errors can affect metadata and source locators. Source pages and quotations are returned by the model and are not independently fact-checked.
 - The latest batch's file paths, content hashes, metadata, naming settings, progress, and exact analyzed PDF prefixes persist locally under `batch-state` in the app storage directory (normally `%LOCALAPPDATA%\pdfrenamer` on Windows). API credentials are not part of the saved batch settings. Temporary working copies are cleaned up on normal exit; durable review copies survive restarting.
@@ -270,7 +272,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
   Set your key in **Config → Settings…** (or `.env` file as described).
 
 - **Network/API errors or invalid model responses**
-  Check the connection and API key/model in **Config → Settings…**, then use **Retry failed files**. Retry preserves the original page count; to analyze more pages, increase `Pages to extract` and start a new **Process PDFs** run.
+  Check the connection and API key/model in **Config → Settings…**, then use **Retry failed files**. Retry preserves saved page counts. To change the page count for one file, select its result and use **Reanalyze file...**.
 
 - **Repeated “Unchanged” status**
   Your template currently evaluates to the existing filename.
@@ -285,7 +287,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
   Use **Continue batch** to reanalyze a changed source. For an occupied destination, open **Review document...** and inspect the suggested distinct filename or enter an override before applying a correction. Existing files are not overwritten.
 
 - **Source page or quotation is missing or incorrect**
-  Browse all the analyzed pages to check the metadata. Source locators are optional model output; they may be absent or mistaken. If relevant information is outside the snippet, increase `Pages to extract` and process the file again.
+  Browse all the analyzed pages to check the metadata. Source locators are optional model output; they may be absent or mistaken. Use **Reanalyze file...** to read more pages of just the selected document. Success replaces its metadata and review pages, including previous manual edits; failure keeps the old result. Then use **Review document...** to check the result and apply any filename correction. Batch totals and undo history are retained, and the per-file page count survives restarting.
 
 - **Saved batch cannot be restored or saved**
   Check the displayed `batch-state` path and available disk space. An unreadable or unsupported checkpoint is reported and kept in place, rather than silently discarded. Earlier versions did not save results, so batches processed with those versions must be processed again. **Undo last batch** still uses the independent rename history.
@@ -313,14 +315,14 @@ python -m pip install -r requirements.txt pyinstaller
 python scripts/build_windows.py
 ```
 
-This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.0-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.1-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
 
 ---
 
 ## Roadmap (suggested)
 
 - Presets dropdown for common author styles (e.g., “Surname, F.”).  
-- Batch overrides (e.g., per-file page count).  
+- Page-count overrides before starting a batch.
 - CSV export of processing results.
 
 ---

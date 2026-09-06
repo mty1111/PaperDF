@@ -96,6 +96,16 @@ class SessionTests(unittest.TestCase):
                 with self.assertRaises(SessionError):
                     BatchStore(self.store.directory).load()
 
+    def test_invalid_per_file_page_counts_are_rejected(self):
+        original = json.loads(self.store.path.read_text())
+        for pages in (0, 51, True, '6'):
+            with self.subTest(pages=pages):
+                data = copy.deepcopy(original)
+                data['rows'][0]['requested_pages'] = pages
+                self.store.path.write_text(json.dumps(data))
+                with self.assertRaises(SessionError):
+                    BatchStore(self.store.directory).load()
+
     def test_changed_file_retains_old_evidence_but_requires_fresh_extraction(self):
         row = self.extracted()
         old_hash = row['fingerprint']

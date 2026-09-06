@@ -21,7 +21,7 @@ import tempfile
 import configparser
 import re
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from tkinter import PhotoImage
 
 from dotenv import load_dotenv
@@ -358,11 +358,16 @@ Basic workflow:
    • Already completed renames remain undoable. The log shows results, skips, and errors.
    • Read the results by metadata and status; “Needs attention only” focuses on files requiring action.
    • “Retry failed files” retries extraction errors only and keeps completed results and batch totals.
-     It uses the original page count, mode, and naming settings, plus the current API key/model.
+     It uses saved per-file page counts, mode, and naming settings, plus the current API key/model.
      A separate “Retrying: X / failed count” counter tracks this attempt. Successful retries are
      renamed as a new undoable batch; metadata gaps and filename conflicts remain for review.
    • After stopping a retry, remaining errors can be retried again. Any successfully extracted file
      held before renaming can be applied with “Continue batch” or “Review document...”.
+   • Select a result and use “Reanalyze file...” to read a different number of first pages for only
+     that file. It sends a new Gemini request, including for files already renamed.
+     Success replaces the metadata and review pages; failed requests preserve the previous result.
+     Review the new result and explicitly apply a correction to change its filename.
+     Its page count is saved for later continuation; batch totals and undo history are retained.
    • The latest batch is saved after each file, including metadata and the exact analyzed PDF pages.
      On restart, saved results are restored and files checked without model requests or renames.
      “Continue batch” reuses unchanged files' metadata and processes pending, failed, or changed files.
@@ -463,7 +468,7 @@ First run:
   Use it to open Settings, paste API key, and review templates.
 
 Privacy & scope:
-- Only the first N pages are uploaded during Process PDFs, retry, or continuation needing extraction.
+- Only the first N pages are uploaded during processing, retry, reanalysis, or continuation needing extraction.
   Reusing cached metadata makes no model request. Uploaded Gemini snippets are
   deleted on a best-effort basis when the extraction attempt finishes, including after errors.
 - The latest batch's metadata, file paths, hashes, progress, and analyzed prefixes are saved locally
@@ -484,7 +489,7 @@ Troubleshooting:
 - Unexpected publisher/journal → For books, {{journal}} is the publisher by design.
 - Source changed → Continue batch to extract fresh metadata before renaming.
 - Destination occupied → Open Review document... and inspect the suggested distinct name or override it.
-- Missing/wrong source locator → Browse the analyzed pages; increase page count and reprocess if needed.
+- Missing/wrong source locator → Browse the analyzed pages; use Reanalyze file... to read more if needed.
 - Missing file → Restore it to the displayed path, then Continue batch.
 - Saved results cannot be loaded → Check the reported checkpoint path. The unreadable file is kept.
 - Recovery needed → Resolve the interrupted move's paths or use Undo last batch.
@@ -899,6 +904,7 @@ def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_
             'fingerprint': '', 'status': 'Error', 'needs_review': True,
             'snippet_path': '', 'page_count': 0, 'is_book': bool(is_book),
             'analysis_attempted': True,
+            'requested_pages': pages,
             'resume_action': 'extract',
         }
         try:
@@ -951,7 +957,7 @@ def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress
     for index, row in enumerate(rows, 1):
         if cancelled():
             break
-        fresh = prepare_preview([row['source']], pages, is_book, sdk_client, model,
+        fresh = prepare_preview([row['source']], row.get('requested_pages', pages), is_book, sdk_client, model,
                                 cancelled, lambda *args: None, review_dir=review_dir)
         if not fresh:
             break
@@ -963,6 +969,32 @@ def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress
         retried.append(row)
         on_progress(index, len(rows), row)
     return retried
+
+
+def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=None):
+    """Replace one result only after a successful fresh extraction; never rename."""
+    if type(pages) is not int or not 1 <= pages <= MAX_PAGES_TO_EXTRACT:
+        raise ValueError(f'Pages must be between 1 and {MAX_PAGES_TO_EXTRACT}.')
+    if row.get('pending_move') or row.get('status') == 'Recovery needed':
+        raise ValueError('Resolve the interrupted move before reanalyzing this file.')
+    fresh = prepare_preview([row['source']], pages, is_book, sdk_client, model,
+                            cancelled, lambda *args: None, review_dir)
+    if not fresh:
+        return False
+    replacement = fresh[0]
+    if replacement.get('extraction_error'):
+        raise ValueError('Reanalysis failed; previous result kept. ' + replacement['extraction_error'])
+    if fingerprint_file(row['source']) != replacement['fingerprint']:
+        raise ValueError('File contents changed during reanalysis; previous result kept.')
+    replacement['original_source'] = row.get('original_source', row['source'])
+    if 'row_id' in row:
+        replacement['row_id'] = row['row_id']
+    replacement.update(status='Needs review', needs_review=True, selected=False,
+                       message='Reanalysis completed. Review the new metadata and apply a correction when ready.')
+    replacement.pop('resume_action', None)
+    row.clear()
+    row.update(replacement)
+    return True
 
 # =========================
 # Main GUI
@@ -1150,6 +1182,49 @@ def main():
 
     panel.on_retry = lambda: continue_saved(retry_only=True)
     panel.on_continue = continue_saved
+
+    def reanalyze_selected(row):
+        if busy or not retry_context:
+            return
+        if row.get('pending_move') or row.get('status') == 'Recovery needed':
+            messagebox.showerror('Recovery needed', 'Resolve the interrupted move before reanalyzing.', parent=root)
+            return
+        previous_pages = row.get('requested_pages', retry_context['pages'])
+        pages = simpledialog.askinteger(
+            'Reanalyze this file',
+            f"{os.path.basename(row['source'])}\nPreviously requested: first {previous_pages} pages.\n\n"
+            'Read how many pages from the beginning?\n'
+            'This sends a new Gemini request. On success, new metadata replaces the current metadata; '
+            'review it before applying a filename correction. Failed requests keep the current result.',
+            initialvalue=previous_pages, minvalue=1, maxvalue=MAX_PAGES_TO_EXTRACT, parent=root)
+        if pages is None:
+            return
+        api_key, model = API_KEY, MODEL_NAME
+        is_book = retry_context['is_book']
+
+        def operation():
+            if not api_key:
+                raise ValueError('Set your Gemini API key in Config → Settings to reanalyze this file.')
+            sdk_client = genai.Client(api_key=api_key)
+            try:
+                return reanalyze_row(row, pages, is_book, sdk_client, model,
+                                     stop_event.is_set, review_session.name)
+            finally:
+                try:
+                    sdk_client.close()
+                except Exception:
+                    logging.warning('Could not close Gemini client', exc_info=True)
+
+        def done(result, error):
+            batch_progress.update(phase='rename', analyzed=sum(
+                item.get('analysis_attempted', True) for item in panel.rows))
+            panel._completed(result, error)
+            if result:
+                log(f'Reanalyzed first {pages} pages: {row["source"]}. Review document to apply corrections.\n')
+
+        panel._work(operation, done)
+
+    panel.on_reanalyze = reanalyze_selected
 
     def process():
         folder = folder_entry.get().strip()

@@ -13,7 +13,7 @@ from paperdf_workflow import undo_last_batch
 
 class ResultsPanel(ttk.Frame):
     def __init__(self, parent, journal_dir, dispatch, set_busy, log, stop_event, on_paths_changed=None,
-                 on_counts_changed=None, on_retry=None, on_continue=None, checkpoint=None):
+                 on_counts_changed=None, on_retry=None, on_continue=None, checkpoint=None, on_reanalyze=None):
         super().__init__(parent)
         self.journal_dir = journal_dir
         self.dispatch = dispatch
@@ -24,6 +24,7 @@ class ResultsPanel(ttk.Frame):
         self.on_counts_changed = on_counts_changed or (lambda renamed, total: None)
         self.on_retry = on_retry
         self.on_continue = on_continue
+        self.on_reanalyze = on_reanalyze
         self.checkpoint = checkpoint or (lambda: None)
         self.total_files = 0
         self.rows = []
@@ -63,6 +64,8 @@ class ResultsPanel(ttk.Frame):
         buttons.grid(row=4, column=0, sticky='ew')
         self.review_btn = ttk.Button(buttons, text='Review document...', command=self.review_selected)
         self.review_btn.pack(side='left', padx=(0, 8))
+        self.reanalyze_btn = ttk.Button(buttons, text='Reanalyze file...', command=self.reanalyze_selected)
+        self.reanalyze_btn.pack(side='left', padx=8)
         self.retry_btn = ttk.Button(buttons, text='Retry failed files', command=self.retry_failed)
         self.retry_btn.pack(side='left', padx=8)
         self.continue_btn = ttk.Button(buttons, text='Continue batch', command=self.continue_batch)
@@ -74,6 +77,7 @@ class ResultsPanel(ttk.Frame):
     def set_enabled(self, enabled):
         self.busy = not enabled
         self.review_btn.configure(state='normal' if enabled and self.rows else 'disabled')
+        self.reanalyze_btn.configure(state='normal' if enabled and self.rows and self.on_reanalyze else 'disabled')
         self.retry_btn.configure(state='normal' if enabled and self.on_retry and
                                  any(can_retry_extraction(row) for row in self.rows) else 'disabled')
         self.undo_btn.configure(state='normal' if enabled else 'disabled')
@@ -83,6 +87,11 @@ class ResultsPanel(ttk.Frame):
     def continue_batch(self):
         if not self.busy and self.on_continue and any(can_continue(row) for row in self.rows):
             self.on_continue()
+
+    def reanalyze_selected(self):
+        row = self._focused_row()
+        if not self.busy and row is not None and self.on_reanalyze:
+            self.on_reanalyze(row)
 
     def retry_failed(self):
         if not self.busy and self.on_retry and any(can_retry_extraction(row) for row in self.rows):

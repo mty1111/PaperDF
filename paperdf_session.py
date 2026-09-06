@@ -217,6 +217,9 @@ class BatchStore:
                         type(row.get('page_count', 0)) is not int or
                         not 0 <= row.get('page_count', 0) <= 50):
                     raise ValueError('Invalid file progress fields.')
+                if 'requested_pages' in row and (type(row['requested_pages']) is not int or
+                                                 not 1 <= row['requested_pages'] <= 50):
+                    raise ValueError('Invalid per-file page count.')
                 previous = row.get('validation_previous')
                 if previous is not None and (not isinstance(previous, dict) or
                                              not isinstance(previous.get('status'), str) or
