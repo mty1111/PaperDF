@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    timeout-minutes: 10
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
@@ -24,7 +25,7 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run offline tests (Linux with virtual display)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m unittest discover -s tests -v
+        run: xvfb-run -a python scripts/run_tests.py
       - name: Run offline tests
         if: runner.os != 'Linux'
-        run: python -m unittest discover -s tests -v
+        run: python scripts/run_tests.py

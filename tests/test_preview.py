@@ -20,6 +20,14 @@ from paperdf_workflow import fingerprint_file
 from paperdf_session import BatchStore
 
 
+def destroy_test_root(root):
+    # Tcl timers outlive a destroyed Tk window. On macOS their later bgerror
+    # opens a native modal dialog and stalls another test's event loop.
+    for callback in root.tk.splitlist(root.tk.call('after', 'info')):
+        root.after_cancel(callback)
+    root.destroy()
+
+
 class ExtractionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -82,7 +90,7 @@ class ResultsWidgetTests(unittest.TestCase):
         except tk.TclError as exc:
             self.skipTest(f'Tk display unavailable: {exc}')
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(destroy_test_root, self.root)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.events = queue.Queue()
@@ -232,16 +240,16 @@ class MainWindowTests(unittest.TestCase):
                 buttons = {w.cget('text'): w for w in all_widgets if isinstance(w, ttk.Button)}
                 labels = [w.cget('text') for w in all_widgets if isinstance(w, ttk.Label)]
                 if not panel.busy and advance(state, panel, buttons, labels, all_widgets):
-                    root.destroy()
+                    destroy_test_root(root)
                     return
                 root.after(10, tick)
             except Exception as exc:
                 errors.append(exc)
-                root.destroy()
+                destroy_test_root(root)
 
         def timeout():
             errors.append(AssertionError(f'Retry workflow timed out at {state["phase"]}'))
-            root.destroy()
+            destroy_test_root(root)
 
         root.after(10, tick)
         root.after(10000, timeout)
@@ -584,16 +592,16 @@ class MainWindowTests(unittest.TestCase):
                         self.assertEqual(app.selected_files, [str(source)])
                         self.assertTrue(source.exists())
                         phases.append('complete')
-                        root.destroy()
+                        destroy_test_root(root)
                         return
                     root.after(20, advance)
                 except Exception as exc:
                     errors.append(exc)
-                    root.destroy()
+                    destroy_test_root(root)
 
             def timeout():
                 errors.append(AssertionError(f'Window workflow timed out at {phases}'))
-                root.destroy()
+                destroy_test_root(root)
 
             root.after(20, advance)
             root.after(10000, timeout)

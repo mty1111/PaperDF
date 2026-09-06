@@ -303,7 +303,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 Run the local test suite from the repository root:
 
 ```bash
-python -m unittest discover -s tests -v
+python scripts/run_tests.py
 ```
 
 Build the versioned Windows executable from the repository root:
