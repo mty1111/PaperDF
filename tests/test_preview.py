@@ -663,6 +663,46 @@ class MainWindowTests(unittest.TestCase):
             dialogs = self.run_retry_window(directory, advance, metadata, client)
             self.assertFalse(dialogs.called, dialogs.call_args)
 
+    def test_academic_batch_correction_undo_and_saved_settings(self):
+        meta = {'authors': ['Gabriel García Márquez', 'World Bank'], 'year': '2024', 'journal': 'AER',
+                'title': 'GDP and eBay', 'evidence': {}, 'academic': {'document_kind': 'published_article',
+                'author_details': [{'literal': 'Gabriel García Márquez', 'kind': 'person', 'given': 'Gabriel',
+                                    'family': 'García Márquez', 'suffix': ''},
+                                   {'literal': 'World Bank', 'kind': 'organization', 'given': '', 'family': '', 'suffix': ''}],
+                'dates': [{'kind': 'publication', 'year': '2024', 'page': 1, 'quote': 'Published 2024'}]}}
+        extraction = Mock(return_value=meta)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(app, 'TITLE_STYLE', 'preserve'), \
+             patch.object(app, 'JOURNAL_ALIASES', 'AER = American Economic Review'):
+            sources = self.make_sources(directory, 1)
+            def advance(state, panel, buttons, labels, widgets):
+                if state['phase'] == 'start':
+                    app.OUTPUT_PATTERN = '{authors} - {year} - {journal} - {title}.pdf'
+                    app.selected_files[:] = sources
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'renamed'
+                elif state['phase'] == 'renamed':
+                    state['path'] = panel.rows[0]['source']
+                    self.assertEqual(Path(state['path']).name,
+                        'García Márquez, World Bank - 2024 - American Economic Review - GDP and eBay.pdf')
+                    panel.apply_correction(panel.rows[0], dict(meta, year='2023'), '')
+                    state['phase'] = 'corrected'
+                elif state['phase'] == 'corrected':
+                    self.assertIn(' - 2023 - ', panel.rows[0]['source'])
+                    panel.undo_btn.invoke()
+                    state['phase'] = 'undone'
+                elif state['phase'] == 'undone':
+                    self.assertEqual(panel.rows[0]['source'], state['path'])
+                    self.assertEqual(extraction.call_count, 1)
+                    state['phase'] = 'complete'
+                    return True
+            dialogs = self.run_retry_window(directory, advance, extraction, Mock(return_value=Mock()))
+            self.assertFalse(dialogs.called, dialogs.call_args)
+            saved = BatchStore(Path(directory) / 'batch-state').load()
+            self.assertEqual(saved['rows'][0]['metadata']['academic'], meta['academic'])
+            self.assertEqual(saved['context']['naming']['journal_aliases'], 'AER = American Economic Review')
+            self.assertEqual(saved['context']['naming']['title_style'], 'preserve')
+
     def test_restore_checks_changed_and_missing_sources_before_continuing(self):
         meta = {'authors': ['Ada'], 'year': '2024', 'title': 'Old title'}
         with tempfile.TemporaryDirectory() as directory:

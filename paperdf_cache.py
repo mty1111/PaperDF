@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from paperdf_schema import FIELDS, validate_metadata
 
 # Bump whenever prompt, response contract, or normalization rules change.
-EXTRACTION_RULES_VERSION = 'gemini-frontmatter-strict-v1'
+EXTRACTION_RULES_VERSION = 'gemini-academic-structured-v2'
 
 
 class ExtractionCache:
@@ -60,8 +60,11 @@ class ExtractionCache:
 
     def put(self, context, metadata, snippet, page_count):
         # Persist canonical model metadata only, never manual filename overrides.
+        academic = metadata.get('academic')
         metadata = {field: metadata.get(field, [] if field == 'authors' else '') for field in FIELDS} | {
             'evidence': {field: metadata.get('evidence', {}).get(field, []) for field in FIELDS}}
+        if academic is not None:
+            metadata['academic'] = academic
         validate_metadata(metadata, page_count, normalized=True)
         with self.connection() as db:
             db.execute('INSERT OR REPLACE INTO results VALUES (?, ?, ?, ?, ?, ?, ?)',

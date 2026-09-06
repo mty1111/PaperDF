@@ -23,6 +23,13 @@ def make_pdf(page_count):
 
 class EvidenceExtractionTests(unittest.TestCase):
     def extract(self, payload, *, pages=4, is_book=False):
+        if isinstance(payload, dict) and set(payload) == {'authors', 'year', 'journal', 'title', 'evidence'}:
+            payload['academic'] = {
+                'document_kind': 'book' if is_book else 'published_article',
+                'author_details': [{'literal': name, 'kind': 'person', 'given': 'Ada', 'family': 'Lovelace', 'suffix': ''}
+                                   for name in payload['authors']],
+                'dates': [{'kind': 'publication', 'year': payload['year'], 'page': 1, 'quote': payload['year']}]
+                         if payload['year'] else []}
         client = Mock()
         client.files.upload.return_value.name = 'files/evidence'
         client.models.generate_content.return_value.text = json.dumps(payload)
@@ -46,10 +53,10 @@ class EvidenceExtractionTests(unittest.TestCase):
         config = client.models.generate_content.call_args.kwargs['config']
         schema = config.response_json_schema
         self.assertEqual(schema['properties']['evidence']['properties']['title']['items']['properties']['page']['maximum'], 4)
-        self.assertEqual(set(schema['required']), {'authors', 'year', 'journal', 'title', 'evidence'})
+        self.assertEqual(set(schema['required']), {'authors', 'year', 'journal', 'title', 'evidence', 'academic'})
         supported_keywords = {
             'type', 'properties', 'required', 'additionalProperties',
-            'items', 'minimum', 'maximum', 'description',
+            'items', 'minimum', 'maximum', 'description', 'enum',
         }
 
         def assert_supported(node):
@@ -68,6 +75,8 @@ class EvidenceExtractionTests(unittest.TestCase):
     def test_non_schema_shapes_are_rejected_and_uploads_deleted(self):
         base = {'authors': ['Ada'], 'year': '1843', 'journal': '', 'title': 'Notes',
                 'evidence': {key: [] for key in ('authors', 'year', 'journal', 'title')}}
+        base['academic'] = {'document_kind': 'unknown', 'dates': [], 'author_details': [
+            {'literal': 'Ada', 'kind': 'unknown', 'given': '', 'family': '', 'suffix': ''}]}
         invalid = [dict(base, authors='Ada'), dict(base, year=1843), dict(base, year='1843/1844'),
                    dict(base, publisher='Press'), {'metadata': base}, [base],
                    {key: value for key, value in base.items() if key != 'evidence'}]

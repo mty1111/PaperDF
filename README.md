@@ -1,6 +1,6 @@
 # PaperDF — Paper Document Formatter
 
-Current source version: **1.2.0** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
+Current source version: **1.3.0** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
 
 **PaperDF** renames large batches of academic PDFs using AI-extracted metadata from the first pages.  
 It reads the first several pages of each file, asks Gemini to extract **Authors / Year / Journal (or Publisher) / Title**, and renames files according to your templates. Files needing attention stay unchanged. When you want to check a result, read the same analyzed pages alongside its metadata, correct it locally, and apply the correction. Any rename batch can be undone.
@@ -21,10 +21,11 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
 - **AI metadata extraction (Gemini):** reads **only the first N pages** per file; sends that snippet to Gemini for structured JSON.
 - **Two modes:** paper vs. book. For books, “journal” is treated as **publisher**.
 - **Custom filename templates:** separate templates for papers vs. books.
+- **Academic details:** structured compound surnames and institutional authors, source-case preservation, configurable journal aliases, and document-version years with page locators. Uncertain names or dates stay unchanged for review. See [academic rules and examples](docs/academic-rules.md).
 - **Author rendering rules:** separate **author-format** options for papers vs. books (e.g., `"{surname}"` for papers, `"{surname}, {first_initial}."` for books).
 - **Embedded Cheatsheet (in Settings):** quick reference for all tokens and examples.
 - **Expanded Help (in Config → Help…):** how it works, end-to-end usage, rename logic, and troubleshooting.
-- **One-click processing:** automatically rename files with a title, authors, and a four-digit year. Missing journal/publisher information is allowed.
+- **One-click processing:** automatically rename files with a title, resolved author types/family names, and an unambiguous four-digit version year. Missing journal/publisher information is allowed.
 - **Retry failed files:** retry extraction errors in the current results without rerunning completed files. Fix the API key or model in Settings, then retry with saved page counts, mode, and naming settings.
 - **Reanalyze file...:** select one result and choose how many first pages to read in a new Gemini request. Review the new metadata before applying a correction; failed requests preserve the previous result.
 - **Continue after restarting:** the latest batch, metadata, and analyzed PDF pages are saved locally. Restore results on startup and use **Continue batch** to finish pending work, reusing unchanged files' metadata.
@@ -51,7 +52,7 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
   - `PyPDF2`
   - `pypdfium2` and `Pillow` (in-app PDF page rendering)
   - `python-dotenv`
-  - `titlecase` (optional; falls back to `str.title()` if missing)
+  - `titlecase` (used by the optional title capitalization style)
 
 **Install packages**
 ```bash
@@ -66,7 +67,7 @@ pip install -r requirements.txt
 Prefer a one-click setup? Download the **standalone build** from the **GitHub Releases** page of this repository.
 
 - No Python or dependencies required.
-- Just run the single-file app (e.g., **PaperDF-v1.2.0-windows.exe** on Windows).
+- Just run the single-file app (e.g., **PaperDF-v1.3.0-windows.exe** on Windows).
 - On first launch, open **Config → Settings…**, paste your **Gemini API key**, review templates, and save.
 - Everything else works the same as the source version.
 
@@ -112,12 +113,13 @@ On first launch, a **Setup Guide** will open:
 1. The app reads **only the first N pages** (`Pages to extract`) of each PDF.
 2. It reuses a matching extraction cache entry, or uploads the snippet to Gemini for structured JSON metadata:
    - `authors: []`, `year: "..."`, `journal: "..."`, `title: "..."`.
+   - Structured author details, document type and quoted date candidates accompany the base metadata. The app selects the year using its [version-year policy](docs/academic-rules.md#document-version-years).
    - For **books**, `journal` is interpreted as the **publisher**.
    - Optional source page numbers and quoted passages help you locate individual fields.
 3. It builds a filename using your template:
    - Papers default: ``{journal} - {year} - {authors} - {title}.pdf``
    - Books default: ``{authors} - {title} - {journal} ({year}).pdf``
-4. It cleans invalid characters and checks metadata, source contents, and destination names. Files with a title, authors, and a four-digit year are renamed automatically when the destination is available. Missing journal/publisher information uses your unpublished placeholder.
+4. It cleans invalid characters and checks metadata, source contents, and destination names. Files with a title, resolved author types/family names, and an unambiguous four-digit version year are renamed automatically when the destination is available. Missing journal/publisher information uses your unpublished placeholder.
 5. Incomplete metadata, extraction failures, and filename conflicts stay unchanged and appear in the results. You can review any result against the exact pages sent to Gemini, correct it locally, and apply the correction. A local journal records applied changes for undo.
 
 **Process PDFs** hashes PDF content and reuses matching extraction results across batches. A formatted filename alone never causes a skip. Cache misses request fresh metadata; all-cache-hit batches work without an API key. **Retry failed files** retries only extraction errors, consulting valid cache entries unless the file was marked for forced refresh. Invalid responses never create cache entries. Opening **Review document...**, browsing pages, applying corrections, and **Undo last batch** work locally and make no model requests. Complete metadata is not a guarantee of factual accuracy; review is available for successful results too.
@@ -164,7 +166,7 @@ On first launch, a **Setup Guide** will open:
    - Double-click any result or select it and choose **Review document...**. Successful renamed files can be reviewed too.
    - Browse the same saved PDF prefix used for extraction. It contains up to your configured N pages, or the whole document if shorter. Flip through every page, jump to a page, and zoom; the viewer is not limited to the first page.
    - Source quotations and **PDF page N** buttons, when available, help locate authors, year, journal/publisher, and title. Page numbers count PDF pages starting at 1, including covers and front matter; they are not the page labels printed inside the document.
-   - Correct authors (one per line), year, journal/publisher, and title alongside the PDF. Missing source locators do not block review or correction.
+   - Correct authors (one per line), year, journal/publisher, and title alongside the PDF. **Name parts...** edits full family names and distinguishes people from organizations. Choose a reported version year to fill the Year field and jump to its source page; you can also type a year manually. Missing source locators do not block review or correction.
    - Select a result and choose **Reanalyze file...** to change its first-page count (1–50). It sends one new extraction request for that file. Success replaces its metadata and review pages for your inspection; its current filename is kept until you apply a correction. The chosen page count is saved, and failures keep the previous result.
 
 8. **Apply a correction**
@@ -221,6 +223,12 @@ Use **Config → Clear extraction cache...** to remove cached metadata, analyzed
   ```
   *Punctuation is literal; include commas/dots where you want them.*
 
+- **Title capitalization**
+  `preserve` (default) keeps extracted case; `title` applies local title case with acronym and mixed-case protection. For unfamiliar acronyms, prefer `preserve`.
+
+- **Journal aliases**
+  One `alias = full journal name` per line; clear to disable. Exact matching ignores case, whitespace and periods. Applied only to paper filenames, never to book publishers. See [rules and publisher sources](docs/academic-rules.md#journal-aliases).
+
 - **Gemini API Key**  
   Stored locally in your user config directory.
 
@@ -256,7 +264,7 @@ Use **Config → Clear extraction cache...** to remove cached metadata, analyzed
   Metadata is extracted during processing even if the current filename looks formatted. If the resulting target name is unchanged, no rename is needed.
 
 - **Incomplete metadata or extraction failure?**
-  Automatic renaming requires a nonempty title, at least one author, and a four-digit year in both modes. Missing journal/publisher information alone is allowed, including for working papers. Missing required fields or failed extraction leaves the file unchanged for review. Correct the metadata or enter a filename override to apply a manual correction.
+  Automatic renaming requires a nonempty title, at least one author, and a four-digit year in both modes. Missing journal/publisher information alone is allowed, including for working papers. Missing required fields, uncertain author types/family names, conflicting or unsupported version dates, or failed extraction leave the file unchanged for review. Correct the metadata or enter a filename override to apply a manual correction.
 
 - **Collisions & duplicates**  
   - If the target filename already exists:
@@ -332,7 +340,7 @@ python -m pip install -r requirements.txt pyinstaller
 python scripts/build_windows.py
 ```
 
-This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.2.0-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.3.0-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
 
 When changing extraction prompts, response validation or normalization, bump `EXTRACTION_RULES_VERSION` in `paperdf_cache.py` to invalidate older extraction entries. Naming-only changes do not require invalidation. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for roadmap scope and verification boundaries.
 

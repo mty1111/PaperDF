@@ -7,6 +7,8 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
+from paperdf_academic import select_year
+from paperdf_author_editor import AuthorDetailsDialog, aligned_details
 
 
 # PDFium is not thread-safe, including document creation and destruction.
@@ -31,6 +33,10 @@ def _evidence_items(metadata, page_count):
             if (type(page) is int and 1 <= page <= page_count
                     and isinstance(quote, str) and quote.strip()):
                 items.append((field, page, quote))
+    for date in metadata.get('academic', {}).get('dates', []):
+        page, quote = date.get('page'), date.get('quote')
+        if type(page) is int and 1 <= page <= page_count and isinstance(quote, str) and quote.strip():
+            items.append((f"date:{date.get('kind', 'other')} {date.get('year', '')}", page, quote))
     return items
 
 
@@ -260,7 +266,11 @@ class ReviewDialog(tk.Toplevel):
         fields = ttk.LabelFrame(parent, text='Metadata', padding=10)
         fields.grid(row=0, column=0, sticky='new', padx=(10, 0))
         fields.columnconfigure(1, weight=1)
-        ttk.Label(fields, text='Authors\n(one per line)').grid(row=0, column=0, sticky='nw', padx=(0, 8))
+        author_label = ttk.Frame(fields)
+        author_label.grid(row=0, column=0, sticky='nw', padx=(0, 8))
+        ttk.Label(author_label, text='Authors\n(one per line)').pack(anchor='w')
+        self.author_details_button = ttk.Button(author_label, text='Name parts...', command=self.edit_author_details)
+        self.author_details_button.pack(anchor='w', pady=(4, 0))
         self.authors = scrolledtext.ScrolledText(fields, height=3, width=25, wrap='word', undo=True)
         self.authors.grid(row=0, column=1, sticky='ew', pady=(0, 7))
         initial_authors = self._metadata.get('authors', [])
@@ -281,6 +291,16 @@ class ReviewDialog(tk.Toplevel):
         self.title_entry.insert('1.0', self._metadata.get('title') or '')
         self.title_entry.bind('<<Modified>>', self._text_changed)
         self.title_entry.edit_modified(False)
+        self.date_options = self._metadata.get('academic', {}).get('dates', [])
+        if self.date_options:
+            self.year_choice = ttk.Combobox(fields, state='readonly', width=25,
+                values=[f"{item['year']} ({item['kind']}, page {item['page']})" for item in self.date_options])
+            self.year_choice.grid(row=8, column=0, columnspan=2, sticky='ew', pady=(7, 0))
+            self.year_choice.set('Choose a reported version year...')
+            self.year_choice.bind('<<ComboboxSelected>>', self.choose_year)
+            suggested, explanation = select_year(self._metadata['academic'])
+            ttk.Label(fields, text=f'Suggested year: {suggested or "review needed"}. {explanation}', wraplength=290).grid(
+                row=9, column=0, columnspan=2, sticky='w', pady=(3, 0))
         ttk.Label(fields, text='Filename override (optional, include .pdf)').grid(row=4, column=0, columnspan=2, sticky='w')
         self.override_var = tk.StringVar(value=override or '')
         self.override_var.trace_add('write', lambda *args: self._refresh_name())
@@ -318,7 +338,26 @@ class ReviewDialog(tk.Toplevel):
                         year=self.entries['year'].get().strip() or 'n.d.',
                         journal=self.entries['journal'].get().strip(),
                         title=self.title_entry.get('1.0', 'end-1c').strip())
+        if 'academic' in metadata:
+            metadata['academic']['author_details'] = aligned_details(metadata['authors'], metadata['academic']['author_details'])
         return metadata
+
+    def choose_year(self, event=None):
+        index = self.year_choice.current()
+        if index >= 0:
+            date = self.date_options[index]
+            self.entries['year'].set(date['year'])
+            self._go_to(date['page'])
+
+    def edit_author_details(self):
+        metadata = self._collect_metadata()
+        if not metadata['authors']:
+            return
+        def use_details(details):
+            academic = self._metadata.setdefault('academic', {'document_kind': 'unknown', 'dates': [], 'author_details': []})
+            academic['author_details'] = details
+            self._refresh_name()
+        return AuthorDetailsDialog(self, metadata['authors'], metadata.get('academic', {}).get('author_details', []), use_details)
 
     def _refresh_name(self):
         if not hasattr(self, 'proposed_name') or self._closed:
@@ -342,7 +381,7 @@ class ReviewDialog(tk.Toplevel):
         for index, (field, page, quote) in enumerate(items):
             line = ttk.Frame(self.evidence_frame)
             line.grid(row=index * 2, column=0, sticky='ew', pady=(3, 0))
-            ttk.Label(line, text=labels[field]).pack(side='left')
+            ttk.Label(line, text=labels.get(field, field.removeprefix('date:'))).pack(side='left')
             ttk.Button(line, text=f'PDF page {page}', command=lambda number=page: self._go_to(number)).pack(side='right')
             label = ttk.Label(self.evidence_frame, text=quote, wraplength=340, justify='left')
             label.grid(row=index * 2 + 1, column=0, sticky='ew', pady=(3, 10))

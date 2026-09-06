@@ -8,6 +8,8 @@ import shutil
 import uuid
 
 from paperdf_workflow import fingerprint_file, _save_journal, _sync_directory, _validate_pair
+from paperdf_academic import parse_aliases
+from paperdf_schema import validate_academic
 
 
 class SessionError(RuntimeError):
@@ -125,7 +127,8 @@ class BatchStore:
     def start(self, paths, context):
         force_refresh = bool(context.get('force_refresh', False))
         context = {key: copy.deepcopy(context[key]) for key in ('pages', 'is_book', 'naming')}
-        context['naming'] = {key: context['naming'][key] for key in ('pattern', 'author_format', 'unpublished')}
+        context['naming'] = {key: context['naming'][key] for key in
+                             ('pattern', 'author_format', 'unpublished', 'title_style', 'journal_aliases') if key in context['naming']}
         data = {'version': 1, 'batch_id': uuid.uuid4().hex, 'context': context,
                 'rows': pending_rows(paths, context['is_book'])}
         if force_refresh:
@@ -204,6 +207,11 @@ class BatchStore:
                     not all(isinstance(context['naming'][key], str) for key in
                             ('pattern', 'author_format', 'unpublished'))):
                 raise ValueError('Invalid saved processing settings.')
+            if context['naming'].get('title_style', 'preserve') not in ('preserve', 'title'):
+                raise ValueError('Invalid title capitalization setting.')
+            if not isinstance(context['naming'].get('journal_aliases', ''), str):
+                raise ValueError('Invalid journal aliases.')
+            parse_aliases(context['naming'].get('journal_aliases', ''))
             if not isinstance(data['rows'], list):
                 raise ValueError('Invalid saved results.')
             seen = set()
@@ -238,6 +246,8 @@ class BatchStore:
                         not all(isinstance(name, str) for name in meta.get('authors', [])) or
                         not all(isinstance(meta.get(key, ''), str) for key in ('title', 'year', 'journal'))):
                     raise ValueError('Invalid metadata fields.')
+                if 'academic' in meta:
+                    validate_academic(meta['academic'], meta.get('authors', []), row.get('page_count', 0))
                 if row.get('fingerprint') and not re.fullmatch(r'[0-9a-f]{64}', row['fingerprint']):
                     raise ValueError('Invalid file fingerprint.')
                 snapshot = row.get('snippet_path')

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-09-06 (pre-release)
+
+- Complete stage 3 implementation: structured compound surnames and institutional authors, conservative capitalization, configurable journal aliases and document-version year selection.
+- Preserve full family names, accents, particles and suffixes. Organizations use their literal names; unknown author types/family names are held for review. Add a local Name parts editor integrated with correction and undo.
+- Preserve extracted capitalization by default; optional title case protects known acronyms and mixed-case terms. Apply exact configurable journal aliases locally, excluding book publishers. Save Unicode aliases and freeze naming settings for continuation.
+- Prefer publication then online year for published articles, latest reported revision for preprints, and the current edition's publication year for books. Show dated quotations, year choices and PDF page navigation. Ambiguous or unsupported dates require review.
+- Extend strict validation to aligned author details and quoted date candidates; version the extraction cache rules. Preserve new academic data through cache reuse and saved batches while keeping old saved batches readable.
+- Offline validation: 155 tests, 154 passed locally and one Windows symlink-permission skip. Tests cover academic policies, strict schema, cache, correction, year navigation, saved settings and undo. Real Gemini/PDF acceptance remains deferred.
+
 ## 1.2.0 — 2026-09-06 (pre-release)
 
 - Complete the second roadmap stage's implementation: persistent cross-batch extraction cache and attempt records, strict local provider-response validation, and integration with failed-file retry and saved-batch continuation.

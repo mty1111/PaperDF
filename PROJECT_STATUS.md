@@ -1,14 +1,14 @@
 # PaperDF roadmap status
 
-## Current delivery: 1.2.0 pre-release
+## Current delivery: 1.3.0 pre-release
 
-Stage 2 implementation is complete; real Gemini/PDF acceptance remains deferred by user request. CI and release outcomes are recorded on the matching GitHub commit/tag; do not infer installation or real-provider validation from a successful package build.
+Stages 2 and 3 implementation are complete; real Gemini/PDF acceptance remains deferred by user request. CI and release outcomes are recorded on the matching GitHub commit/tag; do not infer installation or real-provider validation from a successful package build.
 
 | Stage | Status | Scope |
 | --- | --- | --- |
 | 1: inspect and recover | Implemented with revised interaction | Metadata result table, multipage PDF review, local corrections and durable undo. Automatic normal renames replaced the originally proposed mandatory checkbox approval flow. |
 | 2: avoid redundant requests and incorrect skips | Implemented; offline regression verified locally | See completion checklist below. |
-| 3: academic metadata details | Not systematically implemented | Compound surnames, institutional authors, acronym/title preservation, journal aliases and version-year policy remain. |
+| 3: academic metadata details | Implemented; offline regression verified locally | Structured compound surnames and institutional authors, configurable title styles and journal aliases, and explicit document-version years with review controls. |
 | 4: architecture and expansion | Partial module separation | Workflow, session, review, cache and schema modules exist. CLI, other providers and local metadata extraction remain. |
 
 ## Stage 2 completion checklist
@@ -21,11 +21,22 @@ Stage 2 implementation is complete; real Gemini/PDF acceptance remains deferred 
 - Failed-file retry and saved continuation use cache policy. Forced refresh survives pending/failed files and restart; single-file reanalysis always refreshes.
 - Transactional cache writes, content checks before committing results, damaged-cache reporting, cache-source indicators, and explicit clearing of cache/attempt records.
 
+## Stage 3 completion checklist
+
+- Structured author identity and given/family/suffix parts preserve compound surnames, particles, accents and hyphens. Institutional and unknown names render literally; uncertain types/family names require review.
+- Local Name parts editor, manual version-year selection and source-page navigation integrate with correction, saved results and durable undo.
+- Preserve extracted capitalization by default; optional local title case protects known acronyms, mixed-case terms and marked math tokens.
+- Configurable exact journal aliases with conflict validation, UTF-8 persistence and publisher-mode bypass. Source metadata is retained.
+- Explicit year policy for publication/online dates, preprint revisions and current book editions. Ambiguous or unsupported dates are held for review.
+- Extended strict schema validates aligned author details and quoted date candidates. Versioned cache rules prevent old extraction entries from standing in for new structured responses; old saved batches remain readable.
+- Rules, examples, registry sources and limitations: [academic-rules.md](docs/academic-rules.md).
+
 ## Limits and recovery
 
+- Model name parts and date classifications may be wrong; quotations are not independently checked against the PDF. All-caps unfamiliar acronyms and unstructured names may require manual edits. The built-in journal registry is intentionally small; the version-year policy is an app policy, not a universal citation standard.
 - Provider responses lost before the cache commit can require another request. Separate simultaneously running app instances may race to request the same uncached PDF; there is no distributed request lock.
 - Model identifiers are cache keys; provider-side updates under an unchanged identifier require explicit refresh. Extraction rule changes must bump `EXTRACTION_RULES_VERSION`.
 - Entries persist until cleared. Config clearing preserves latest-batch state and rename journals. If the database itself cannot be opened, close the app and move `extraction-cache.sqlite3` aside to preserve it before retrying.
 - The latest saved batch keeps original extraction settings and local corrections; strict response validation applies to new model responses, not retroactively to saved/manual metadata.
 
-Local baseline verification: `python scripts/run_tests.py` — 141 tests, 140 passed, one Windows symlink-permission skip. Tests use synthetic PDFs and mocked provider responses. Publication and remote CI must be checked separately.
+Local baseline verification: `python scripts/run_tests.py` — 155 tests, 154 passed, one Windows symlink-permission skip. Tests use synthetic PDFs and mocked provider responses. Publication and remote CI must be checked separately.

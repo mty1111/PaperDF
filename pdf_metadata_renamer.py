@@ -36,6 +36,9 @@ from paperdf_session import BatchStore, can_continue, validate_rows
 from paperdf_workflow import fingerprint_file
 from paperdf_cache import ExtractionCache
 from paperdf_schema import parse_metadata
+from paperdf_academic import (parse_name, author_components, title_style, canonical_journal, parse_aliases,
+                              DEFAULT_ALIASES, AUTHOR_KINDS, DOCUMENT_KINDS, DATE_KINDS,
+                              select_year, academic_review_reasons, compact)
 
 # Branding
 APP_NAME = "PaperDF"  # Paper Document Formatter
@@ -73,13 +76,6 @@ def show_about_dialog(parent=None):
     txt.insert('1.0', info)
     txt.config(state='disabled')
     tk.Button(win, text='Close', command=win.destroy).pack(pady=(0,10))
-# Optional: robust title-casing with fallback
-try:
-    from titlecase import titlecase  # pip install titlecase
-except Exception:
-    def titlecase(s: str) -> str:
-        return s.title() if isinstance(s, str) else s
-
 # =========================
 # Storage locations
 # =========================
@@ -124,9 +120,12 @@ FIRST_RUN = not os.path.exists(CONFIG_PATH)
 # =========================
 # Load or initialize config
 # =========================
-config = configparser.ConfigParser()
+config = configparser.ConfigParser(interpolation=None)
 if os.path.exists(CONFIG_PATH):
-    config.read(CONFIG_PATH)
+    try:
+        config.read(CONFIG_PATH, encoding='utf-8')
+    except UnicodeDecodeError:
+        config.read(CONFIG_PATH)  # pre-1.3 settings used the platform encoding
 if 'Settings' not in config:
     config['Settings'] = {}
 settings = config['Settings']
@@ -140,6 +139,8 @@ MODEL_NAME = settings.get('model', MODEL_NAME)
 # Separate author formats
 AUTHOR_FMT_PAPER = settings.get('author_format_paper', DEFAULT_AUTHOR_FMT_PAPER)
 AUTHOR_FMT_BOOK = settings.get('author_format_book', DEFAULT_AUTHOR_FMT_BOOK)
+TITLE_STYLE = settings.get('title_style', 'preserve')
+JOURNAL_ALIASES = settings.get('journal_aliases', DEFAULT_ALIASES)
 
 # Globals
 client = None
@@ -196,7 +197,9 @@ def save_config():
     config['Settings']['model'] = MODEL_NAME
     config['Settings']['author_format_paper'] = AUTHOR_FMT_PAPER
     config['Settings']['author_format_book'] = AUTHOR_FMT_BOOK
-    with open(CONFIG_PATH, 'w') as f:
+    config['Settings']['title_style'] = TITLE_STYLE
+    config['Settings']['journal_aliases'] = JOURNAL_ALIASES
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         config.write(f)
 
 # =========================
@@ -233,11 +236,11 @@ def browse_folder(entry: tk.Entry):
 # =========================
 def show_config():
     global OUTPUT_PATTERN, BOOK_OUTPUT_PATTERN, UNPUBLISHED_PLACEHOLDER, API_KEY, MODEL_NAME
-    global AUTHOR_FMT_PAPER, AUTHOR_FMT_BOOK
+    global AUTHOR_FMT_PAPER, AUTHOR_FMT_BOOK, TITLE_STYLE, JOURNAL_ALIASES
 
     cfg_win = tk.Toplevel()
     cfg_win.title(f'{APP_NAME} — Settings')
-    cfg_win.geometry('860x560')
+    cfg_win.geometry('860x760')
     cfg_win.transient(cfg_win.master)
     cfg_win.grab_set()
 
@@ -280,9 +283,27 @@ def show_config():
     model_entry = tk.Entry(form, width=60); model_entry.insert(0, MODEL_NAME)
     model_entry.grid(row=r, column=1, sticky='we', padx=5, pady=5); r += 1
 
+    tk.Label(form, text='Title capitalization:').grid(row=r, column=0, sticky='e', padx=5)
+    title_style_var = tk.StringVar(value=TITLE_STYLE)
+    ttk.Combobox(form, textvariable=title_style_var, values=('preserve', 'title'), state='readonly').grid(row=r, column=1, sticky='w', padx=5)
+    r += 1
+    tk.Label(form, text='Journal aliases\n(alias = full name):').grid(row=r, column=0, sticky='ne', padx=5)
+    aliases_entry = scrolledtext.ScrolledText(form, height=4, width=55)
+    aliases_entry.insert('1.0', JOURNAL_ALIASES)
+    aliases_entry.grid(row=r, column=1, sticky='ew', padx=5, pady=5)
+    r += 1
+
     def save_and_close():
         global OUTPUT_PATTERN, BOOK_OUTPUT_PATTERN, UNPUBLISHED_PLACEHOLDER, API_KEY, MODEL_NAME
-        global AUTHOR_FMT_PAPER, AUTHOR_FMT_BOOK
+        global AUTHOR_FMT_PAPER, AUTHOR_FMT_BOOK, TITLE_STYLE, JOURNAL_ALIASES
+        aliases = aliases_entry.get('1.0', 'end-1c')
+        try:
+            parse_aliases(aliases)
+        except ValueError as exc:
+            messagebox.showerror('Journal aliases', str(exc), parent=cfg_win)
+            return
+        TITLE_STYLE = title_style_var.get()
+        JOURNAL_ALIASES = aliases
         OUTPUT_PATTERN = pat_entry.get().strip() or DEFAULT_OUTPUT_PATTERN
         BOOK_OUTPUT_PATTERN = book_pat_entry.get().strip() or DEFAULT_BOOK_OUTPUT_PATTERN
         UNPUBLISHED_PLACEHOLDER = plc_entry.get().strip() or DEFAULT_UNPUBLISHED
@@ -443,12 +464,18 @@ A) Metadata extraction:
    • An existing filename that looks formatted does not skip extraction.
    • New model responses must match the schema exactly. Invalid types, keys, years or citations
      are extraction errors available for retry. Empty fields remain unchanged for review.
-   • “Journal” is title-cased; for books it is treated as the publisher.
+   • Source capitalization is preserved by default. Settings can apply title case and journal aliases.
+     Journal aliases do not change book publishers.
+   • Structured author names keep full compound surnames; organizations use their full names.
+   • Version dates include page/quote locators. Published articles prefer publication then online year;
+     preprints prefer the latest reported revision; books use the current edition's publication year.
+     Ambiguous dates or author types stay unchanged for review.
    • Complete metadata is not a guarantee of factual accuracy; successful results can also be reviewed.
 
 B) Filename building:
-   • {{authors}} is built by parsing each name into parts (first/middle/surname/suffix)
-     and rendering them with your author-format template, then joining with ", ".
+   • {{authors}} uses structured given/family/suffix parts and your author-format template,
+     then joins authors with ", ". Organization and unknown authors keep their full literal names.
+     Review document → Name parts... corrects name structure locally. A year choice jumps to its page.
    • The final filename is created via your Output Pattern / Book Output Pattern.
    • Illegal filesystem characters are stripped; whitespace is normalized.
 
@@ -491,7 +518,8 @@ Privacy & scope:
 - A crash between a provider response and its checkpoint can cause that request to be repeated.
 - Browsing pages, editing, applying corrections, and undoing are local; they make no model requests.
 - Extraction quality and cost depend on the documents, page count, and selected model.
-- Name parsing is heuristic and may need manual edits for unusual name orders or capitalization.
+- Model name parts and date quotations can be wrong. Review allows local correction without a new request.
+- Old unstructured names use heuristic parsing. Keep preserve capitalization for unfamiliar acronyms.
 
 Troubleshooting:
 - “Gemini API key is required” → Set your key in Settings.
@@ -655,6 +683,21 @@ def _metadata_output_schema(page_count=None):
             'year': {'type': 'string'},
             'journal': {'type': 'string'},
             'title': {'type': 'string'},
+            'academic': {
+                'type': 'object',
+                'properties': {
+                    'document_kind': {'type': 'string', 'enum': list(DOCUMENT_KINDS)},
+                    'author_details': {'type': 'array', 'items': {
+                        'type': 'object', 'properties': {
+                            'literal': {'type': 'string'}, 'kind': {'type': 'string', 'enum': list(AUTHOR_KINDS)},
+                            'given': {'type': 'string'}, 'family': {'type': 'string'}, 'suffix': {'type': 'string'}},
+                        'required': ['literal', 'kind', 'given', 'family', 'suffix'], 'additionalProperties': False}},
+                    'dates': {'type': 'array', 'items': {
+                        'type': 'object', 'properties': {
+                            'kind': {'type': 'string', 'enum': list(DATE_KINDS)}, 'year': {'type': 'string'},
+                            'page': page_schema, 'quote': {'type': 'string', 'description': 'Exact date passage, 1-500 characters'}},
+                        'required': ['kind', 'year', 'page', 'quote'], 'additionalProperties': False}}},
+                'required': ['document_kind', 'author_details', 'dates'], 'additionalProperties': False},
             'evidence': {
                 'type': 'object',
                 'properties': {
@@ -665,7 +708,7 @@ def _metadata_output_schema(page_count=None):
                 'additionalProperties': False,
             },
         },
-        'required': [*_EVIDENCE_FIELDS, 'evidence'],
+        'required': [*_EVIDENCE_FIELDS, 'evidence', 'academic'],
         'additionalProperties': False,
     }
 
@@ -723,7 +766,22 @@ def get_metadata_from_snippet(pdf_bytes: bytes, is_book: bool, sdk_client=None, 
             'Do not invent, paraphrase, or translate quotes. Do not fabricate page numbers. '
             'If you cannot locate evidence for a field, return an empty evidence array for that field. '
             'For books, cite the publisher under evidence.journal. '
-            'An empty evidence array is allowed even when a metadata field was extracted.'
+            'An empty evidence array is allowed even when a metadata field was extracted. '
+            'Also return academic with document_kind, author_details and dates. '
+            'Preserve source capitalization, accents, hyphens and acronyms in names, title and journal. '
+            'author_details aligns one-to-one with authors: literal is the same full name; kind is person, '
+            'organization or unknown. For a person give given, family (including every surname particle '
+            'and compound family-name component) and suffix. Never shorten an institutional author. '
+            'For organizations and unknown authors leave given/family/suffix empty. If a personal name '
+            'cannot be split reliably, leave family empty instead of guessing. Affiliations are not authors. '
+            'document_kind is published_article, preprint, book or unknown for this actual document. '
+            'dates lists dates explicitly describing this document/version, never references: kind is '
+            'publication, online, revision, preprint, copyright, original, received, accepted, accessed '
+            'or other; give year (four digits), physical page and exact quote. Publication for a book '
+            'means the present edition, not an earlier original edition. Distinguish posted revisions '
+            'from journal publication, received/accepted dates and download/access stamps. '
+            'Do not infer publication merely from a journal name, DOI, affiliation or reference. '
+            'Return an empty dates array if no date is supported by a visible passage.'
         )
         response = sdk_client.models.generate_content(
             model=model or MODEL_NAME,
@@ -754,22 +812,25 @@ def get_metadata_from_snippet(pdf_bytes: bytes, is_book: bool, sdk_client=None, 
     authors = _metadata_authors(data.get('authors') or data.get('author'))
     unknown_tokens = {'unknown','n/a','na','none','anonymous','unknown author','unknownauthors'}
     authors = [a for a in authors if a.strip() and a.strip().lower() not in unknown_tokens]
-    authors = [titlecase(a) for a in authors]
+    authors = [compact(a) for a in authors]
 
     jraw = data.get('journal') or data.get('publisher')
     journal = _metadata_text(jraw)
     if journal.lower() in unknown_tokens:
         journal = ''
-    journal = titlecase(journal) if journal else ''
+    journal = compact(journal)
 
     title = _metadata_text(data.get('title'))
     if title.lower() in unknown_tokens or title.lower() == 'unknowntitle':
         title = ''
-    title = titlecase(title) if title else ''
+    title = compact(title)
+    academic = data['academic']
+    academic['author_details'] = [item for item in academic['author_details'] if compact(item['literal']) in authors]
+    year = select_year(academic)[0] or 'n.d.'
 
     return {
         'authors': authors, 'year': year, 'journal': journal, 'title': title,
-        'evidence': _normalize_evidence(evidence_raw, page_count),
+        'evidence': _normalize_evidence(evidence_raw, page_count), 'academic': academic,
     }
 
 def _metadata_all_empty(meta: dict) -> bool:
@@ -786,42 +847,11 @@ def _metadata_all_empty(meta: dict) -> bool:
 # =========================
 # Author formatting
 # =========================
-_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
-
 def _parse_author(full: str):
-    if not full:
-        return {'first':'', 'middle':'', 'surname':'', 'suffix':''}
-    raw = re.sub(r'\s+', ' ', full).strip()
-    comma_parts = [p.strip() for p in raw.split(',') if p.strip()]
-    if len(comma_parts) >= 2 and comma_parts[1].lower() not in _SUFFIXES:
-        surname = comma_parts[0]
-        rest = re.sub(r'[;]', ' ', ' '.join(comma_parts[1:])).strip()
-        parts = [p for p in rest.split() if p]
-        suffix = ''
-        if parts and parts[-1].lower() in _SUFFIXES:
-            suffix = parts[-1]
-            parts = parts[:-1]
-        first = parts[0] if parts else ''
-        middle = ' '.join(parts[1:]) if len(parts) > 1 else ''
-        return {'first': first, 'middle': middle, 'surname': surname, 'suffix': suffix}
-
-    s = re.sub(r'[;,]', ' ', raw).strip()
-    parts = [p for p in s.split() if p]
-    suffix = ''
-    if parts and parts[-1].lower() in _SUFFIXES:
-        suffix = parts[-1]; parts = parts[:-1]
-    if not parts:
-        return {'first':'', 'middle':'', 'surname':'', 'suffix':suffix}
-    surname = parts[-1]
-    if len(parts) == 1:
-        return {'first':'', 'middle':'', 'surname':surname, 'suffix':suffix}
-    first = parts[0]
-    middle_parts = parts[1:-1]
-    middle = ' '.join(middle_parts) if middle_parts else ''
-    return {'first': first, 'middle': middle, 'surname': surname, 'suffix': suffix}
+    return parse_name(full)
 
 def _initial(s: str) -> str:
-    return s[0].upper() if s else ''
+    return '.-'.join(part[0].upper() for part in s.split('-') if part)
 
 def _middle_initials(m: str) -> str:
     if not m: return ''
@@ -847,16 +877,16 @@ def _render_author(fmt: str, comps: dict) -> str:
     out = re.sub(r'\s+,', ',', out); out = re.sub(r',\s*,', ',', out)
     out = re.sub(r'\(\s*\)', '', out); out = re.sub(r'\s+\.', '.', out)
     out = out.strip(' ,')
-    return titlecase(out) if out else ''
+    return out
 
-def format_authors_list(authors_list, is_book: bool, author_format=None) -> str:
+def format_authors_list(authors_list, is_book: bool, author_format=None, author_details=None) -> str:
     fmt = author_format if author_format is not None else (AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER)
     if not authors_list:
         return 'UnknownAuthors'
     rendered = []
     for full in authors_list:
-        comps = _parse_author(full)
-        s = _render_author(fmt, comps)
+        comps = author_components(full, author_details or [])
+        s = compact(full) if comps is None else _render_author(fmt, comps)
         if s:
             rendered.append(s)
     return ', '.join(rendered) if rendered else 'UnknownAuthors'
@@ -866,14 +896,17 @@ def format_authors_list(authors_list, is_book: bool, author_format=None) -> str:
 # =========================
 def build_new_filename(meta: dict, is_book: bool = False, naming_settings=None) -> str:
     naming = naming_settings or {}
-    journal = meta.get('journal') or naming.get('unpublished', UNPUBLISHED_PLACEHOLDER)
-    authors_str = format_authors_list(meta.get('authors', []), is_book, naming.get('author_format'))
+    aliases = naming.get('journal_aliases', '' if naming_settings is not None else JOURNAL_ALIASES)
+    style = naming.get('title_style', 'preserve' if naming_settings is not None else TITLE_STYLE)
+    journal = canonical_journal(meta.get('journal', ''), aliases, is_book)
+    journal = journal or naming.get('unpublished', UNPUBLISHED_PLACEHOLDER)
+    authors_str = format_authors_list(meta.get('authors', []), is_book, naming.get('author_format'), meta.get('academic', {}).get('author_details'))
     pattern = naming.get('pattern', BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN)
     filename = pattern.format(
         journal=journal,
         year=meta.get('year','n.d.'),
         authors=authors_str,
-        title=meta.get('title','UnknownTitle')
+        title=title_style(meta.get('title','UnknownTitle'), style)
     )
     cleaned = ''.join(c for c in filename if c not in INVALID_FILENAME_CHARS)
     return ' '.join(cleaned.split()).strip()
@@ -938,15 +971,17 @@ def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_
                 missing.append('authors')
             if not re.fullmatch(r'[1-9]\d{3}', _metadata_text(row['metadata'].get('year'))):
                 missing.append('year (four digits)')
-            row['needs_review'] = bool(missing)
-            row['selected'] = not missing
-            row['status'] = 'Needs review' if missing else 'Extracted'
-            if missing:
+            academic_issues = academic_review_reasons(row['metadata'])
+            row['needs_review'] = bool(missing or academic_issues)
+            row['selected'] = not row['needs_review']
+            row['status'] = 'Needs review' if row['needs_review'] else 'Extracted'
+            if row['needs_review']:
                 row.pop('resume_action', None)
             else:
                 row['resume_action'] = 'rename'
             row['reason'] = 'Missing required metadata: ' + ', '.join(missing) + '.' if missing else ''
-            if missing:
+            row['reason'] = ' '.join(filter(None, [row['reason'], *academic_issues]))
+            if row['needs_review']:
                 row['message'] = row['reason']
         except Exception as exc:
             if isinstance(sdk_client, _LazyGeminiClient) and sdk_client.error is not None:
@@ -1315,7 +1350,7 @@ def main():
         is_book, api_key, model = book_var.get(), API_KEY, MODEL_NAME
         naming = {'pattern': BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN,
                   'author_format': AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER,
-                  'unpublished': UNPUBLISHED_PLACEHOLDER}
+                  'unpublished': UNPUBLISHED_PLACEHOLDER, 'title_style': TITLE_STYLE, 'journal_aliases': JOURNAL_ALIASES}
         retry_context.update(pages=pages, is_book=is_book, naming=naming, force_refresh=force_var.get())
         stop_event.clear()
         set_busy(True)

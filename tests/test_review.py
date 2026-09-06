@@ -14,6 +14,7 @@ from PyPDF2 import PdfWriter
 from PyPDF2.generic import DecodedStreamObject, NameObject
 
 from paperdf_review import ReviewDialog, _evidence_items, _PdfRenderer, _RenderRequest, _render_page
+from paperdf_author_editor import AuthorDetailsDialog
 
 
 def sample_pdf():
@@ -147,6 +148,16 @@ class ReviewWidgetTests(unittest.TestCase):
         self.dialogs.append(dialog)
         return dialog
 
+    def academic_row(self):
+        row = self.row()
+        row['metadata'].update(authors=['Gabriel García Márquez', 'World Bank'], year='2021', academic={
+            'document_kind': 'preprint', 'author_details': [
+                {'literal': 'Gabriel García Márquez', 'kind': 'person', 'given': 'Gabriel García', 'family': 'Márquez', 'suffix': ''},
+                {'literal': 'World Bank', 'kind': 'organization', 'given': '', 'family': '', 'suffix': ''}],
+            'dates': [{'kind': 'revision', 'year': year, 'page': page, 'quote': f'Revised {year}'}
+                      for year, page in [('2021', 2), ('2023', 3)]]})
+        return row
+
     def pump_until(self, predicate):
         # Use the application's event-loop entry point. Cocoa's nested update
         # can keep draining native events without returning to the test deadline.
@@ -211,7 +222,7 @@ class ReviewWidgetTests(unittest.TestCase):
         self.root.deiconify()
         self.pump_until(lambda: self.root.winfo_ismapped())
         with patch.object(ReviewDialog, 'grab_set'):
-            dialog = self.dialog()
+            dialog = self.dialog(self.academic_row())
         dialog.overrideredirect(True)
         dialog.geometry('1280x860+20000+20000')
         tk.Toplevel.deiconify(dialog)
@@ -221,7 +232,7 @@ class ReviewWidgetTests(unittest.TestCase):
             def layout_ready():
                 if dialog.winfo_width() != width or dialog.winfo_height() != height:
                     return False
-                for widget in (dialog.authors, dialog.title_entry, dialog.evidence_canvas, dialog.apply_button):
+                for widget in (dialog.authors, dialog.title_entry, dialog.evidence_canvas, dialog.apply_button, dialog.year_choice):
                     x = widget.winfo_rootx() - dialog.winfo_rootx()
                     y = widget.winfo_rooty() - dialog.winfo_rooty()
                     if (not widget.winfo_ismapped() or widget.winfo_width() < 80 or widget.winfo_height() < 20
@@ -233,6 +244,47 @@ class ReviewWidgetTests(unittest.TestCase):
             self.pump_until(layout_ready)
             self.assertGreater(dialog.canvas.winfo_width(), 400)
             self.assertGreater(dialog.evidence_canvas.winfo_height(), 100)
+
+    def test_name_parts_and_version_year_edits_stay_local_until_apply(self):
+        row = self.academic_row()
+        before = deepcopy(row)
+        callback = Mock()
+        dialog = self.dialog(row, callback)
+        with patch.object(AuthorDetailsDialog, 'deiconify'), patch.object(AuthorDetailsDialog, 'grab_set'):
+            editor = dialog.edit_author_details()
+        try:
+            editor.variables['given'].set('Gabriel')
+            editor.variables['family'].set('García Márquez')
+            editor.selector.current(1)
+            editor.select_author()
+            editor.variables['family'].set('Bank')  # organizations discard personal parts
+            editor.save_button.invoke()
+        finally:
+            if editor.winfo_exists():
+                editor.destroy()
+        dialog.year_choice.current(1)
+        dialog.choose_year()
+        self.pump_until(lambda: dialog._photo is not None)
+        self.assertEqual(dialog._page, 3)
+        self.assertEqual(dialog.entries['year'].get(), '2023')
+        self.assertEqual(row, before)
+        self.assertFalse(callback.called)
+        dialog.apply_button.invoke()
+        metadata = callback.call_args.args[0]
+        self.assertEqual(metadata['academic']['author_details'][0]['family'], 'García Márquez')
+        self.assertEqual(metadata['academic']['author_details'][1]['family'], '')
+        self.assertEqual(metadata['academic']['author_details'][1]['kind'], 'organization')
+        self.assertEqual(metadata['year'], '2023')
+        self.assertEqual(metadata['academic']['dates'], before['metadata']['academic']['dates'])
+
+    def test_cancelled_name_parts_editor_does_not_change_metadata(self):
+        dialog = self.dialog(self.academic_row())
+        before = deepcopy(dialog._metadata)
+        with patch.object(AuthorDetailsDialog, 'deiconify'), patch.object(AuthorDetailsDialog, 'grab_set'):
+            editor = dialog.edit_author_details()
+        editor.variables['family'].set('Unwanted edit')
+        editor.destroy()
+        self.assertEqual(dialog._metadata, before)
 
     def test_evidence_button_opens_page_three_in_renamed_row(self):
         dialog = self.dialog()

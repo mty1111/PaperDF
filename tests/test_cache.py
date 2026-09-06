@@ -24,6 +24,9 @@ class CacheTests(unittest.TestCase):
         self.sdk.files.upload.return_value.name = 'files/offline'
         self.payload = {'authors': ['Ada Lovelace'], 'year': '1843', 'journal': '', 'title': 'Notes',
                         'evidence': {field: [] for field in FIELDS}}
+        self.payload['academic'] = {'document_kind': 'published_article',
+            'author_details': [{'literal': 'Ada Lovelace', 'kind': 'person', 'given': 'Ada', 'family': 'Lovelace', 'suffix': ''}],
+            'dates': [{'kind': 'publication', 'year': '1843', 'page': 1, 'quote': '1843'}]}
         self.sdk.models.generate_content.return_value.text = json.dumps(self.payload)
 
     def write_pdf(self, width=100):
@@ -70,8 +73,8 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(self.extract()['metadata']['title'], 'Notes')
         self.sdk.models.generate_content.return_value.text = json.dumps(dict(self.payload, title='New title'))
         refreshed = self.extract(force=True)
-        self.assertEqual(refreshed['metadata']['title'], 'New Title')
-        self.assertEqual(self.extract()['metadata']['title'], 'New Title')
+        self.assertEqual(refreshed['metadata']['title'], 'New title')
+        self.assertEqual(self.extract()['metadata']['title'], 'New title')
         self.assertEqual(self.sdk.files.upload.call_count, 2)
 
     def test_invalid_response_is_retryable_and_never_cached(self):
@@ -86,7 +89,7 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(self.sdk.files.upload.call_count, 2)
 
     def test_empty_fields_stay_reviewable_on_cache_hit(self):
-        self.sdk.models.generate_content.return_value.text = json.dumps(dict(self.payload, authors=[], year='', title=''))
+        self.sdk.models.generate_content.return_value.text = json.dumps(dict(self.payload, authors=[], year='', title='', academic={'document_kind': 'unknown', 'dates': [], 'author_details': []}))
         self.assertEqual(self.extract()['status'], 'Needs review')
         again = self.extract()
         self.assertEqual(again['status'], 'Needs review')
