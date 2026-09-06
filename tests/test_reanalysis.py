@@ -72,7 +72,7 @@ class ReanalysisTests(unittest.TestCase):
             self.source.write_bytes(b'changed externally')
             return self.meta
         with patch.object(app, 'get_metadata_from_snippet', side_effect=extract):
-            with self.assertRaisesRegex(ValueError, 'changed during reanalysis'):
+            with self.assertRaisesRegex(ValueError, 'changed during extraction'):
                 self.reanalyze()
         self.assertEqual(self.row, before)
 

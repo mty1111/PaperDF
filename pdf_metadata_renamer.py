@@ -34,6 +34,8 @@ from paperdf_preview import ResultsPanel
 from paperdf_processing import can_retry_extraction, process_rows
 from paperdf_session import BatchStore, can_continue, validate_rows
 from paperdf_workflow import fingerprint_file
+from paperdf_cache import ExtractionCache
+from paperdf_schema import parse_metadata
 
 # Branding
 APP_NAME = "PaperDF"  # Paper Document Formatter
@@ -353,7 +355,8 @@ Basic workflow:
    • Click “Process PDFs” to extract metadata and automatically rename eligible files.
    • Automatic renaming requires a title, authors, and a four-digit year. A missing journal or publisher
      is allowed, including for working papers. Incomplete results, errors, and conflicts stay unchanged.
-   • Every processing run makes new extraction requests; there is no required filename approval step.
+   • Process PDFs reuses matching extraction results across batches. It never trusts filenames alone.
+     Check Force fresh extraction to bypass the cache; there is no required filename approval step.
    • “Stop” takes effect between files; an in-flight request finishes first.
    • Already completed renames remain undoable. The log shows results, skips, and errors.
    • Read the results by metadata and status; “Needs attention only” focuses on files requiring action.
@@ -375,6 +378,9 @@ Basic workflow:
      On restart, saved results are restored and files checked without model requests or renames.
      “Continue batch” reuses unchanged files' metadata and processes pending, failed, or changed files.
      Missing files must be restored to the displayed path; their locations are not guessed.
+   • Extraction cache matches content hash, pages, paper/book mode, model and extraction rules.
+     Cached batches need no API key. Reanalyze file always requests fresh metadata.
+     Config → Clear extraction cache removes cached results and attempt records; batch and undo stay intact.
    • Starting a new Process PDFs batch replaces the saved batch and its generated review cache.
 
 5) Review a document when needed
@@ -435,7 +441,8 @@ A) Metadata extraction:
    The app reads the first N pages and asks the model to return JSON with:
      authors (array), year (string), journal (string), title (string).
    • An existing filename that looks formatted does not skip extraction.
-   • Empty/unknown values are cleaned. Missing required fields stay unchanged for review.
+   • New model responses must match the schema exactly. Invalid types, keys, years or citations
+     are extraction errors available for retry. Empty fields remain unchanged for review.
    • “Journal” is title-cased; for books it is treated as the publisher.
    • Complete metadata is not a guarantee of factual accuracy; successful results can also be reviewed.
 
@@ -477,6 +484,8 @@ Privacy & scope:
 - The latest batch's metadata, file paths, hashes, progress, and analyzed prefixes are saved locally
   under batch-state. Temporary working copies are cleaned up on exit; saved review copies persist.
   Starting a new batch replaces the saved results and removes the previous generated review cache.
+- Cross-batch extraction results, PDF prefixes and attempt records persist in extraction-cache.sqlite3.
+  Clear them in Config → Clear extraction cache. API keys and raw provider errors are not recorded there.
   To remove saved results manually, close the app and remove batch-state from its storage directory.
   API credentials are not part of the batch settings. The undo journal remains independent.
 - A crash between a provider response and its checkpoint can cause that request to be repeated.
@@ -486,7 +495,7 @@ Privacy & scope:
 
 Troubleshooting:
 - “Gemini API key is required” → Set your key in Settings.
-- “Invalid JSON” from model → Increase pages to extract, verify the PDF has metadata on early pages.
+- Invalid JSON/schema → Check the selected model and use Retry failed files. Invalid responses are not cached.
 - Repeated “Unchanged” status → Your template currently evaluates to the existing filename.
 - Wrong author format → Adjust the Author Format fields in Settings; use tokens correctly.
 - Unexpected publisher/journal → For books, {{journal}} is the publisher by design.
@@ -559,18 +568,6 @@ def extract_first_n_pages(pdf_path: str, n: int) -> bytes:
     writer.write(buf)
     buf.seek(0)
     return buf.read()
-
-def _metadata_response_to_dict(data_raw) -> dict:
-    if isinstance(data_raw, list):
-        data_raw = next((item for item in data_raw if isinstance(item, dict)), None)
-    if isinstance(data_raw, dict):
-        keys = {str(k).strip().lower() for k in data_raw.keys()}
-        nested = data_raw.get('metadata')
-        if not (keys & {'authors', 'author', 'year', 'journal', 'publisher', 'title'}) and isinstance(nested, dict):
-            data_raw = nested
-    if not isinstance(data_raw, dict):
-        raise ValueError('Invalid JSON shape: expected an object with metadata fields.')
-    return {str(k).strip().lower(): v for k, v in data_raw.items()}
 
 def _metadata_text(value) -> str:
     if value is None:
@@ -737,15 +734,8 @@ def get_metadata_from_snippet(pdf_bytes: bytes, is_book: bool, sdk_client=None, 
                 system_instruction=system_instruction,
             )
         )
-        logging.info(f"Gemini raw response: {response.text}")
-        try:
-            data_raw = json.loads(response.text)
-            data = _metadata_response_to_dict(data_raw)
-            evidence_raw = data.get('evidence')
-            if evidence_raw is None and isinstance(data_raw, dict):
-                evidence_raw = data_raw.get('evidence')
-        except json.JSONDecodeError:
-            raise ValueError(f'Invalid JSON: {response.text}')
+        data = parse_metadata(response.text, page_count)
+        evidence_raw = data['evidence']
     finally:
         if snippet_file is not None:
             snippet_name = getattr(snippet_file, 'name', None)
@@ -891,7 +881,8 @@ def build_new_filename(meta: dict, is_book: bool = False, naming_settings=None) 
 # =========================
 # Read-only preview extraction
 # =========================
-def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None):
+def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None,
+                    cache=None, force=False):
     import uuid
 
     rows = []
@@ -910,17 +901,36 @@ def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_
             'requested_pages': pages,
             'resume_action': 'extract',
         }
+        context = None
         try:
             row['fingerprint'] = fingerprint_file(path)
-            snippet = extract_first_n_pages(path, pages)
-            row['page_count'] = _snippet_page_count(snippet) or 0
+            context = ExtractionCache.context(row['fingerprint'], pages, is_book, model or MODEL_NAME)
+            cached = cache.get(context) if cache is not None and not force else None
+            if cached is not None:
+                row['metadata'], snippet, row['page_count'] = cached
+                row['extraction_source'] = 'cache'
+            else:
+                snippet = extract_first_n_pages(path, pages)
+                row['page_count'] = _snippet_page_count(snippet) or 0
+                if not row['page_count']:
+                    raise ValueError('PDF has no readable pages to extract.')
+                row['extraction_source'] = 'model'
             if review_dir is not None:
                 os.makedirs(review_dir, exist_ok=True)
                 snapshot = os.path.join(os.path.abspath(review_dir), f'{uuid.uuid4().hex}.pdf')
                 with open(snapshot, 'xb') as stream:
                     stream.write(snippet)
                 row['snippet_path'] = snapshot
-            row['metadata'] = get_metadata_from_snippet(snippet, is_book, sdk_client, model)
+            if cached is None:
+                if isinstance(sdk_client, _LazyGeminiClient):
+                    sdk_client.ensure()
+                row['metadata'] = get_metadata_from_snippet(snippet, is_book, sdk_client, model)
+            if fingerprint_file(path) != row['fingerprint']:
+                raise ValueError('File contents changed during extraction; retry with the current file.')
+            if cache is not None:
+                if cached is None:
+                    cache.put(context, row['metadata'], snippet, row['page_count'])
+                cache.record(context, path, 'cache_hit' if cached is not None else 'extracted')
             missing = []
             if not _metadata_text(row['metadata'].get('title')):
                 missing.append('title')
@@ -939,6 +949,15 @@ def prepare_preview(file_list, pages, is_book, sdk_client, model, cancelled, on_
             if missing:
                 row['message'] = row['reason']
         except Exception as exc:
+            if isinstance(sdk_client, _LazyGeminiClient) and sdk_client.error is not None:
+                row['analysis_attempted'] = False
+            if force:
+                row['force_refresh'] = True
+            if cache is not None and context is not None:
+                try:
+                    cache.record(context, path, 'failed', type(exc).__name__)
+                except Exception:
+                    logging.warning('Could not record extraction failure', exc_info=True)
             row['extraction_error'] = str(exc)
             row['message'] = str(exc)
             row['reason'] = 'Extraction failed: ' + str(exc)
@@ -954,14 +973,15 @@ def retry_failed_extractions(rows, pages, is_book, sdk_client, model, cancelled,
     return extract_rows(failed, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir)
 
 
-def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None):
+def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress, review_dir=None, cache=None):
     """Extract a selected subset of a durable manifest, preserving its file IDs."""
     retried = []
     for index, row in enumerate(rows, 1):
         if cancelled():
             break
         fresh = prepare_preview([row['source']], row.get('requested_pages', pages), is_book, sdk_client, model,
-                                cancelled, lambda *args: None, review_dir=review_dir)
+                                cancelled, lambda *args: None, review_dir=review_dir, cache=cache,
+                                force=row.get('force_refresh', False))
         if not fresh:
             break
         original_source = row.get('original_source', row['source'])
@@ -974,14 +994,14 @@ def extract_rows(rows, pages, is_book, sdk_client, model, cancelled, on_progress
     return retried
 
 
-def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=None):
+def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=None, cache=None):
     """Replace one result only after a successful fresh extraction; never rename."""
     if type(pages) is not int or not 1 <= pages <= MAX_PAGES_TO_EXTRACT:
         raise ValueError(f'Pages must be between 1 and {MAX_PAGES_TO_EXTRACT}.')
     if row.get('pending_move') or row.get('status') == 'Recovery needed':
         raise ValueError('Resolve the interrupted move before reanalyzing this file.')
     fresh = prepare_preview([row['source']], pages, is_book, sdk_client, model,
-                            cancelled, lambda *args: None, review_dir)
+                            cancelled, lambda *args: None, review_dir, cache=cache, force=True)
     if not fresh:
         return False
     replacement = fresh[0]
@@ -1002,11 +1022,39 @@ def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=
 # =========================
 # Main GUI
 # =========================
+class _LazyGeminiClient:
+    """Allow cache-only batches without credentials or a provider connection."""
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.instance = None
+        self.error = None
+
+    def ensure(self):
+        if self.error is not None:
+            raise self.error
+        if self.instance is None:
+            try:
+                if not self.api_key:
+                    raise ValueError('Set your Gemini API key in Config → Settings for uncached files.')
+                self.instance = genai.Client(api_key=self.api_key)
+            except Exception as exc:
+                self.error = exc
+                raise
+        return self.instance
+
+    def __getattr__(self, name):
+        return getattr(self.ensure(), name)
+
+    def close(self):
+        if self.instance is not None:
+            self.instance.close()
+
 def main():
     global selected_files, files_entry, folder_entry
     selected_files = []
     review_session = tempfile.TemporaryDirectory(prefix='paperdf-review-')
     batch_store = BatchStore(os.path.join(STORE_DIR, 'batch-state'))
+    extraction_cache = ExtractionCache(os.path.join(STORE_DIR, 'extraction-cache.sqlite3'))
     root = tk.Tk()
     root.title(f"{APP_NAME} {APP_VERSION}")
     root.geometry('1120x820')
@@ -1022,6 +1070,20 @@ def main():
     cfg.add_command(label='Settings...', command=show_config)
     cfg.add_command(label='Help...', command=show_help_config)
     cfg.add_command(label='About...', command=lambda: show_about_dialog(root))
+    def clear_extraction_cache():
+        if busy:
+            return
+        if messagebox.askyesno('Clear extraction cache',
+                               'Delete cached extraction results and their attempt records?\n'
+                               'Future batches may need new Gemini requests. Saved batch results and undo history are kept.',
+                               parent=root):
+            try:
+                extraction_cache.clear()
+            except Exception as exc:
+                messagebox.showerror('Cache not cleared', str(exc), parent=root)
+            else:
+                log('Extraction cache and attempt records cleared.\n')
+    cfg.add_command(label='Clear extraction cache...', command=clear_extraction_cache)
     menubar.add_cascade(label='Config', menu=cfg)
     root.config(menu=menubar)
     root.columnconfigure(0, weight=1)
@@ -1054,6 +1116,9 @@ def main():
 
     book_btn = ttk.Checkbutton(options, text='Book mode', variable=book_var, command=toggle_book)
     book_btn.pack(side='left', padx=10)
+    force_var = tk.BooleanVar(value=False)
+    force_btn = ttk.Checkbutton(inputs, text='Force fresh extraction (ignore cache)', variable=force_var)
+    force_btn.grid(row=3, column=0, columnspan=3, sticky='w', padx=5)
     busy = False
     closing = False
     status = tk.StringVar(value='Process PDFs in one click. Review individual documents when needed.')
@@ -1103,9 +1168,10 @@ def main():
     def set_busy(value):
         nonlocal busy
         busy = value
-        for widget in (folder_entry, folder_btn, files_btn, pages_entry, book_btn, process_btn):
+        for widget in (folder_entry, folder_btn, files_btn, pages_entry, book_btn, force_btn, process_btn):
             widget.configure(state='disabled' if value else 'normal')
         cfg.entryconfigure(0, state='disabled' if value else 'normal')
+        cfg.entryconfigure('Clear extraction cache...', state='disabled' if value else 'normal')
         stop_btn.configure(state='normal' if value else 'disabled')
         panel.set_enabled(not value)
         status.set('Working… Stop takes effect between files.' if value else 'Batch results are ready. Review any document or undo the last batch.')
@@ -1155,11 +1221,11 @@ def main():
             retried = []
             try:
                 if to_extract and not stop_event.is_set():
-                    if not api_key:
-                        raise ValueError('Set your Gemini API key in Config → Settings to analyze remaining files.')
-                    sdk_client = genai.Client(api_key=api_key)
+                    sdk_client = _LazyGeminiClient(api_key)
                     retried = extract_rows(to_extract, pages, is_book, sdk_client, model,
-                                           stop_event.is_set, on_progress, review_session.name)
+                                           stop_event.is_set, on_progress, review_session.name, cache=extraction_cache)
+                    if sdk_client.error is not None:
+                        raise sdk_client.error
             finally:
                 if sdk_client is not None:
                     try:
@@ -1211,7 +1277,7 @@ def main():
             sdk_client = genai.Client(api_key=api_key)
             try:
                 return reanalyze_row(row, pages, is_book, sdk_client, model,
-                                     stop_event.is_set, review_session.name)
+                                     stop_event.is_set, review_session.name, cache=extraction_cache)
             finally:
                 try:
                     sdk_client.close()
@@ -1241,9 +1307,6 @@ def main():
         except ValueError:
             messagebox.showerror('Page count', f'Enter a whole number between 1 and {MAX_PAGES_TO_EXTRACT}.', parent=root)
             return
-        if not API_KEY:
-            messagebox.showerror('API key required', 'Set your Gemini API key in Config → Settings.', parent=root)
-            return
         if selected_files and folder:
             messagebox.showerror('Select input', 'Choose files or a folder, not both.', parent=root)
             return
@@ -1253,7 +1316,7 @@ def main():
         naming = {'pattern': BOOK_OUTPUT_PATTERN if is_book else OUTPUT_PATTERN,
                   'author_format': AUTHOR_FMT_BOOK if is_book else AUTHOR_FMT_PAPER,
                   'unpublished': UNPUBLISHED_PLACEHOLDER}
-        retry_context.update(pages=pages, is_book=is_book, naming=naming)
+        retry_context.update(pages=pages, is_book=is_book, naming=naming, force_refresh=force_var.get())
         stop_event.clear()
         set_busy(True)
         logw.delete('1.0', tk.END)
@@ -1266,9 +1329,9 @@ def main():
         def on_progress(index, total, row):
             batch_store.save()
             def update():
-                batch_progress.update(analyzed=index, total=total)
+                batch_progress.update(analyzed=sum(item.get('analysis_attempted', True) for item in batch_store.data['rows']), total=total)
                 refresh_progress()
-                log(f"{row['status']}: {row['source']} {row.get('message') or row.get('reason') or row.get('extraction_error', '')}\n")
+                log(f"{row['status']} [{row.get('extraction_source', 'pending')}]: {row['source']} {row.get('message') or row.get('reason') or row.get('extraction_error', '')}\n")
             run_on_ui(root, update)
 
         def finish(rows, error):
@@ -1310,15 +1373,11 @@ def main():
                 rows = batch_store.start(items, retry_context)
                 if stop_event.is_set():
                     return
-                try:
-                    sdk_client = genai.Client(api_key=api_key)
-                except Exception as exc:
-                    for row in rows:
-                        row.update(status='Error', extraction_error=str(exc), message=str(exc))
-                    batch_store.save()
-                    raise
+                sdk_client = _LazyGeminiClient(api_key)
                 extract_rows(rows, pages, is_book, sdk_client, model, stop_event.is_set, on_progress,
-                             review_dir=review_session.name)
+                             review_dir=review_session.name, cache=extraction_cache)
+                if sdk_client.error is not None:
+                    raise sdk_client.error
             except Exception as exc:
                 error = str(exc)
             finally:

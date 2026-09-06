@@ -180,7 +180,9 @@ class ResultsPanel(ttk.Frame):
         row = self._focused_row()
         if row:
             detail = row.get('message') or row.get('reason') or 'Review the analyzed pages if you want to check or correct the metadata.'
-            self.details.set(row['source'] + '\n' + detail)
+            origin = row.get('extraction_source')
+            prefix = 'Reused cached extraction. ' if origin == 'cache' else ''
+            self.details.set(row['source'] + '\n' + prefix + detail)
         else:
             self.details.set('No results match this view.')
 

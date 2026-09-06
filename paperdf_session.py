@@ -123,10 +123,14 @@ class BatchStore:
         return path
 
     def start(self, paths, context):
+        force_refresh = bool(context.get('force_refresh', False))
         context = {key: copy.deepcopy(context[key]) for key in ('pages', 'is_book', 'naming')}
         context['naming'] = {key: context['naming'][key] for key in ('pattern', 'author_format', 'unpublished')}
         data = {'version': 1, 'batch_id': uuid.uuid4().hex, 'context': context,
                 'rows': pending_rows(paths, context['is_book'])}
+        if force_refresh:
+            for row in data['rows']:
+                row['force_refresh'] = True
         previous = self.data
         self._write(data)
         self.data = data
@@ -220,6 +224,8 @@ class BatchStore:
                 if 'requested_pages' in row and (type(row['requested_pages']) is not int or
                                                  not 1 <= row['requested_pages'] <= 50):
                     raise ValueError('Invalid per-file page count.')
+                if 'force_refresh' in row and type(row['force_refresh']) is not bool:
+                    raise ValueError('Invalid saved cache policy.')
                 previous = row.get('validation_previous')
                 if previous is not None and (not isinstance(previous, dict) or
                                              not isinstance(previous.get('status'), str) or

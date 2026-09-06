@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 — 2026-09-06 (pre-release)
+
+- Complete the second roadmap stage's implementation: persistent cross-batch extraction cache and attempt records, strict local provider-response validation, and integration with failed-file retry and saved-batch continuation.
+- Match full-content SHA-256, requested pages, paper/book mode, model and extraction-rule version. Reuse exact PDF prefixes and extracted metadata after renames, moves and restarts. Cached batches need no Gemini credentials or client connection; naming settings are applied locally.
+- Add a force-refresh checkbox for new batches; preserve that choice for unfinished/failed files across restart. Single-file reanalysis always bypasses cache and updates it only after success.
+- Reject non-schema, duplicate-key, incorrectly typed and invalid-citation responses as retryable errors. Empty metadata remains reviewable, including on cache hits. Existing batch files stay readable.
+- Add cache clearing in Config, cache-source details/logs, and offline cache/GUI regression tests. Cache failures are surfaced and failed writes retain prior committed results. Real Gemini/PDF acceptance remains deferred.
+
 ## 1.1.2 — 2026-09-06 (pre-release)
 
 - Add **Export all results...** to save the current batch as a CSV report, including original/current paths, metadata, statuses, page counts, and problem details. Export includes rows hidden by the attention filter and makes no model requests.

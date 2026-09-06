@@ -65,59 +65,39 @@ class EvidenceExtractionTests(unittest.TestCase):
         self.assertIn('physical page', config.system_instruction)
         self.assertIn('ignoring printed page numbers', config.system_instruction)
 
-    def test_legacy_metadata_aliases_and_book_publisher_evidence_still_work(self):
-        metadata, client = self.extract({
-            'author': [{'first': 'Ada', 'last': 'Lovelace'}],
-            'year': {'value': 1843}, 'publisher': {'name': 'Example Press'},
-            'title': ['Notes'],
-            'evidence': {
-                'author': [{'page': 2, 'quote': 'Ada Lovelace'}],
-                'publisher': [{'page': 3, 'quote': 'Example Press'}],
-            },
-        }, is_book=True)
-        self.assertEqual(metadata['authors'], ['Ada Lovelace'])
-        self.assertEqual(metadata['year'], '1843')
-        self.assertEqual(metadata['journal'], 'Example Press')
-        self.assertEqual(metadata['title'], 'Notes')
-        self.assertEqual(metadata['evidence']['journal'], [{'page': 3, 'quote': 'Example Press'}])
-        self.assertEqual(metadata['evidence']['authors'], [{'page': 2, 'quote': 'Ada Lovelace'}])
-        self.assertIn('This is a book', client.models.generate_content.call_args.kwargs['config'].system_instruction)
+    def test_non_schema_shapes_are_rejected_and_uploads_deleted(self):
+        base = {'authors': ['Ada'], 'year': '1843', 'journal': '', 'title': 'Notes',
+                'evidence': {key: [] for key in ('authors', 'year', 'journal', 'title')}}
+        invalid = [dict(base, authors='Ada'), dict(base, year=1843), dict(base, year='1843/1844'),
+                   dict(base, publisher='Press'), {'metadata': base}, [base],
+                   {key: value for key, value in base.items() if key != 'evidence'}]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                sdk = Mock()
+                sdk.files.upload.return_value.name = 'files/invalid'
+                sdk.models.generate_content.return_value.text = json.dumps(payload)
+                with self.assertRaisesRegex(ValueError, 'schema'):
+                    app.get_metadata_from_snippet(make_pdf(4), False, sdk, 'fake')
+                sdk.files.delete.assert_called_once_with(name='files/invalid')
 
-    def test_nested_and_legacy_list_metadata_without_evidence_are_accepted(self):
-        payload = {'authors': ['Ada Lovelace'], 'year': '1843', 'journal': '', 'title': 'Notes'}
-        nested, _ = self.extract({
-            'metadata': payload,
-            'evidence': {'title': [{'page': 2, 'quote': 'Notes'}]},
-        })
-        self.assertEqual(nested['evidence']['title'], [{'page': 2, 'quote': 'Notes'}])
-        legacy, _ = self.extract([payload])
-        self.assertEqual(legacy['authors'], ['Ada Lovelace'])
-        self.assertTrue(all(not citations for citations in legacy['evidence'].values()))
+    def test_invalid_citations_are_rejected_without_coercion(self):
+        for citation in ({'page': 0, 'quote': 'zero'}, {'page': 5, 'quote': 'outside'},
+                         {'page': True, 'quote': 'boolean'}, {'page': '2', 'quote': 'string'},
+                         {'page': 1, 'quote': ' '}, {'page': 1, 'quote': 'x' * 501},
+                         {'page': 1, 'quote': 42}, {'page': 1}):
+            with self.subTest(citation=citation):
+                payload = {'authors': [], 'year': '', 'journal': '', 'title': 'Notes',
+                           'evidence': {key: [] for key in ('authors', 'year', 'journal', 'title')}}
+                payload['evidence']['title'] = [citation]
+                with self.assertRaisesRegex(ValueError, 'schema'):
+                    self.extract(payload)
 
-    def test_invalid_citations_are_discarded_instead_of_clamped_or_fabricated(self):
-        valid = {'page': 3, 'quote': 'Exact  original\ntext'}
-        metadata, _ = self.extract({
-            'title': 'Notes',
-            'evidence': {
-                'title': [
-                    valid, valid, {'page': 0, 'quote': 'zero'},
-                    {'page': 5, 'quote': 'outside snippet'},
-                    {'page': True, 'quote': 'boolean'},
-                    {'page': 2.0, 'quote': 'float'},
-                    {'page': '2', 'quote': 'string'},
-                    {'page': 1, 'quote': ''},
-                    {'page': 1, 'quote': '   '},
-                    {'page': 1, 'quote': 42},
-                    {'page': 1, 'quote': 'x' * 501},
-                    {'page': 1}, None,
-                ],
-                'unrecognized': [{'page': 1, 'quote': 'ignored'}],
-                'year': {'page': 2, 'quote': 'not a list'},
-            },
-        })
-        self.assertEqual(metadata['evidence']['title'], [valid])
-        self.assertNotIn('unrecognized', metadata['evidence'])
-        self.assertEqual(metadata['evidence']['year'], [])
+    def test_duplicate_json_keys_are_rejected(self):
+        sdk = Mock()
+        sdk.models.generate_content.return_value.text = '{"title":"A","title":"B"}'
+        with self.assertRaisesRegex(ValueError, 'duplicate key'):
+            app.get_metadata_from_snippet(make_pdf(2), False, sdk, 'fake')
+        sdk.files.delete.assert_called_once()
 
     def test_api_failure_also_deletes_uploaded_snippet(self):
         client = Mock()

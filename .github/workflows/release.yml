@@ -168,7 +168,7 @@ jobs:
           body: |
             Pre-release build for ${{ needs.build.outputs.version }}.
 
-            Adds CSV export of all current batch results, including original/current paths, metadata, statuses, page counts, and problem details. Reports preserve Unicode and multi-line fields, include filtered-out results, and make no model requests. Failed writes preserve existing reports.
+            Adds persistent cross-batch extraction caching and attempt records, strict local response validation, force-refresh controls, and cache-aware retry/continuation. Cache hits reuse exact analyzed pages without a Gemini request; invalid responses remain retryable and are never cached.
 
             Real Gemini/PDF acceptance testing is deferred. Automated checks use synthetic PDFs and mocked provider responses; this pre-release is available for trial use.
             See CHANGELOG.md in the tagged source for changes and validation scope.

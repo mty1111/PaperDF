@@ -1,6 +1,6 @@
 # PaperDF — Paper Document Formatter
 
-Current source version: **1.1.2** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
+Current source version: **1.2.0** (pre-release). See [CHANGELOG.md](CHANGELOG.md) for changes and validation scope.
 
 **PaperDF** renames large batches of academic PDFs using AI-extracted metadata from the first pages.  
 It reads the first several pages of each file, asks Gemini to extract **Authors / Year / Journal (or Publisher) / Title**, and renames files according to your templates. Files needing attention stay unchanged. When you want to check a result, read the same analyzed pages alongside its metadata, correct it locally, and apply the correction. Any rename batch can be undone.
@@ -28,6 +28,8 @@ Papers downloaded from the web often have unreadable filenames (e.g., `s2-345324
 - **Retry failed files:** retry extraction errors in the current results without rerunning completed files. Fix the API key or model in Settings, then retry with saved page counts, mode, and naming settings.
 - **Reanalyze file...:** select one result and choose how many first pages to read in a new Gemini request. Review the new metadata before applying a correction; failed requests preserve the previous result.
 - **Continue after restarting:** the latest batch, metadata, and analyzed PDF pages are saved locally. Restore results on startup and use **Continue batch** to finish pending work, reusing unchanged files' metadata.
+- **Cross-batch cache:** reuse extraction results for matching PDF contents, page count, paper/book mode, model and extraction-rule version. File paths, naming templates and API credentials are not part of the cache key. Change names or move a PDF without paying for the same extraction again.
+- **Strict model responses:** enforce required keys, field types, year format, evidence structure and page bounds locally. Invalid or duplicate-key JSON is a retryable extraction error, not a partially accepted result.
 - **Results organized by metadata:** inspect titles, authors, years, and status; use **Needs attention only** to focus on incomplete results or errors.
 - **CSV reports:** use **Export all results...** to save the full current batch, including original/current paths, metadata, statuses, page counts, and problem details.
 - **Optional document review:** open any result, including an already renamed file, and browse all the pages used for extraction alongside editable metadata. Flip pages, jump to a page, or zoom.
@@ -64,7 +66,7 @@ pip install -r requirements.txt
 Prefer a one-click setup? Download the **standalone build** from the **GitHub Releases** page of this repository.
 
 - No Python or dependencies required.
-- Just run the single-file app (e.g., **PaperDF-v1.1.2-windows.exe** on Windows).
+- Just run the single-file app (e.g., **PaperDF-v1.2.0-windows.exe** on Windows).
 - On first launch, open **Config → Settings…**, paste your **Gemini API key**, review templates, and save.
 - Everything else works the same as the source version.
 
@@ -108,7 +110,7 @@ On first launch, a **Setup Guide** will open:
 ## How it works (concise)
 
 1. The app reads **only the first N pages** (`Pages to extract`) of each PDF.
-2. It uploads that snippet to Gemini and requests structured JSON metadata:
+2. It reuses a matching extraction cache entry, or uploads the snippet to Gemini for structured JSON metadata:
    - `authors: []`, `year: "..."`, `journal: "..."`, `title: "..."`.
    - For **books**, `journal` is interpreted as the **publisher**.
    - Optional source page numbers and quoted passages help you locate individual fields.
@@ -118,7 +120,7 @@ On first launch, a **Setup Guide** will open:
 4. It cleans invalid characters and checks metadata, source contents, and destination names. Files with a title, authors, and a four-digit year are renamed automatically when the destination is available. Missing journal/publisher information uses your unpublished placeholder.
 5. Incomplete metadata, extraction failures, and filename conflicts stay unchanged and appear in the results. You can review any result against the exact pages sent to Gemini, correct it locally, and apply the correction. A local journal records applied changes for undo.
 
-Every **Process PDFs** run reads PDF content and requests metadata; a filename that already looks formatted is not enough to skip extraction. **Retry failed files** rereads only files whose extraction failed and makes new extraction attempts. Opening **Review document...**, browsing pages, applying corrections, and **Undo last batch** work locally and make no model requests. Complete metadata is not a guarantee of factual accuracy; review is available for successful results too.
+**Process PDFs** hashes PDF content and reuses matching extraction results across batches. A formatted filename alone never causes a skip. Cache misses request fresh metadata; all-cache-hit batches work without an API key. **Retry failed files** retries only extraction errors, consulting valid cache entries unless the file was marked for forced refresh. Invalid responses never create cache entries. Opening **Review document...**, browsing pages, applying corrections, and **Undo last batch** work locally and make no model requests. Complete metadata is not a guarantee of factual accuracy; review is available for successful results too.
 
 ---
 
@@ -152,11 +154,11 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 6. **Continue a saved batch**
    - The app saves the complete file list before extraction, then checkpoints each extraction, rename, correction, and undo. Closing the app preserves the latest batch, including files not yet started.
    - On startup, results and counters are restored while source contents are checked. Startup makes no model requests and performs no renames. Click **Continue batch** when ready.
-   - Unchanged files with complete cached metadata finish locally without another API request or API key. Pending files, extraction errors, and files marked **Changed** receive fresh extraction using the saved page count/mode/naming settings and your current API key/model. Existing completed and undone results stay completed unless their contents changed.
+   - Unchanged files with complete cached metadata finish locally without another API request or API key. Pending files, extraction errors, and files marked **Changed** consult the cross-batch cache using their current contents, saved page count/mode, and selected model; cache misses receive fresh extraction. Naming uses the saved batch settings. Existing completed and undone results stay completed unless their contents changed.
    - Files marked **Missing** stay unchanged: restore them to the displayed path, then continue. The app does not guess where an externally moved file went. **Recovery needed** means an interrupted rename cannot be verified; resolve the reported paths or use **Undo last batch**.
    - Metadata gaps and filename conflicts still require document review. Newly applied renames form a separate undo batch. The full file total remains fixed, and repeated extraction attempts do not inflate the analyzed count.
    - Only the latest batch is restored. Starting a new **Process PDFs** batch replaces the saved batch and removes its old generated review cache; the undo history remains independent. Changes to files during folder enumeration are outside the saved manifest: continuation uses the discovered file list, not a fresh folder scan.
-   - Checkpoints cover completed extraction attempts. If the app terminates after a provider response but before that result is saved, continuing may repeat that request.
+   - Successful extractions are cached before the batch checkpoint. A response lost before the cache transaction commits can still require another request after restarting.
 
 7. **Review a document when needed**
    - Double-click any result or select it and choose **Review document...**. Successful renamed files can be reviewed too.
@@ -187,6 +189,12 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 ---
 
 ## Settings (Config → Settings…)
+
+**Extraction cache:** normal processing reuses valid results. Enable **Force fresh extraction (ignore cache)** to request fresh metadata for a new batch; unfinished or failed forced requests keep that policy when continued or retried after restarting. **Reanalyze file...** always bypasses the cache. Successful refresh replaces the matching cache entry; failed refresh keeps the old cache entry and previous single-file review result.
+
+The log marks extraction as `[cache]` or `[model]`, and result details identify reused metadata. Cache contains original extracted metadata, including incomplete results held for review; manual corrections remain in the saved batch and do not replace model results globally. Updated naming templates are applied locally to cached metadata. The selected model identifier is used as supplied; use forced refresh if a provider changes the model behind the same identifier.
+
+Use **Config → Clear extraction cache...** to remove cached metadata, analyzed PDF prefixes and attempt records. This preserves the saved batch and rename/undo journals. Cache entries currently remain until cleared; cache corruption is reported instead of silently making more model requests.
 
 - **Output Pattern (papers)**  
   Template for non-book files. Default:  
@@ -264,11 +272,12 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 
 ## Notes on cost and privacy
 
-- Only the **first N pages** are sent to the model during **Process PDFs**, **Retry failed files**, **Reanalyze file...**, or **Continue batch** when fresh extraction is needed. Reusing cached metadata makes no model request. The app attempts to delete each uploaded Gemini snippet when the extraction attempt finishes, including after errors.
+- On cache misses, only the **first N pages** are sent to the model during **Process PDFs**, **Retry failed files**, **Reanalyze file...**, or **Continue batch** when fresh extraction is needed. Reusing cached metadata makes no model request. The app attempts to delete each uploaded Gemini snippet when the extraction attempt finishes, including after errors.
 - Costs depend on the selected model, document content, page count, and provider pricing. No benchmark or cost estimate is included here.
 - Scanned PDFs can be processed, but scan quality and model extraction errors can affect metadata and source locators. Source pages and quotations are returned by the model and are not independently fact-checked.
 - The latest batch's file paths, content hashes, metadata, naming settings, progress, and exact analyzed PDF prefixes persist locally under `batch-state` in the app storage directory (normally `%LOCALAPPDATA%\pdfrenamer` on Windows). API credentials are not part of the saved batch settings. Temporary working copies are cleaned up on normal exit; durable review copies survive restarting.
 - Starting another batch replaces the saved results and removes the previous batch's generated review cache. To remove saved results without processing another batch, close the app and remove its `batch-state` folder. The separate `rename-history` folder retains undo records.
+- `extraction-cache.sqlite3` in the app storage directory holds cross-batch results and PDF prefixes, plus timestamped source-path records of cache hits, successful extractions and failures. These records contain error types, not raw provider errors or API keys. Starting a new batch does not erase this cache; clear it from Config when needed.
 - Browsing pages, editing, applying corrections, and undoing results are local operations and do not send another model request.
 
 ---
@@ -280,6 +289,7 @@ Every **Process PDFs** run reads PDF content and requests metadata; a filename t
 
 - **Network/API errors or invalid model responses**
   Check the connection and API key/model in **Config → Settings…**, then use **Retry failed files**. Retry preserves saved page counts. To change the page count for one file, select its result and use **Reanalyze file...**.
+  Fresh model responses must satisfy the exact schema. Legacy list/nested/alias responses and invalid citations are rejected instead of coerced. Existing saved batches remain readable.
 
 - **Repeated “Unchanged” status**
   Your template currently evaluates to the existing filename.
@@ -322,7 +332,9 @@ python -m pip install -r requirements.txt pyinstaller
 python scripts/build_windows.py
 ```
 
-This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.1.2-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+This creates `dist/PaperDF.exe`, `dist/PaperDF-v1.2.0-windows.exe`, and its `.exe.sha256` checksum. The app embeds `VERSION.txt`; Windows file properties use `version_info.txt`. Update both version files and `CHANGELOG.md` when preparing a new version. The build refuses mismatched version metadata.
+
+When changing extraction prompts, response validation or normalization, bump `EXTRACTION_RULES_VERSION` in `paperdf_cache.py` to invalidate older extraction entries. Naming-only changes do not require invalidation. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for roadmap scope and verification boundaries.
 
 ---
 

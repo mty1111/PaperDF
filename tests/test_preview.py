@@ -603,6 +603,66 @@ class MainWindowTests(unittest.TestCase):
             dialogs = self.run_retry_window(directory, advance, extraction, client)
             self.assertFalse(dialogs.called, dialogs.call_args)
 
+    def test_new_batch_reuses_cache_without_key_and_applies_new_naming(self):
+        metadata = Mock(return_value={'authors': ['Ada'], 'year': '1843', 'title': 'Cached title'})
+        client = Mock(return_value=Mock())
+        with tempfile.TemporaryDirectory() as directory:
+            sources = self.make_sources(directory, 1)
+
+            def advance(state, panel, buttons, labels, widgets):
+                if state['phase'] == 'start':
+                    app.selected_files[:] = sources
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'first'
+                elif state['phase'] == 'first':
+                    self.assertEqual(panel.rows[0]['status'], 'Renamed')
+                    app.API_KEY = ''
+                    app.OUTPUT_PATTERN = '{title} - cached.pdf'
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'second'
+                elif state['phase'] == 'second':
+                    self.assertEqual(metadata.call_count, 1)
+                    self.assertEqual(client.call_count, 1)
+                    self.assertEqual(panel.rows[0]['extraction_source'], 'cache')
+                    self.assertEqual(Path(panel.rows[0]['source']).name, 'Cached title - cached.pdf')
+                    self.assertIn('Renamed: 1 / 1 files  ·  Analyzed: 1 / 1', labels)
+                    panel.undo_btn.invoke()
+                    state['phase'] = 'undo'
+                elif state['phase'] == 'undo':
+                    self.assertEqual(Path(panel.rows[0]['source']).name, 'Cached title.pdf')
+                    state['phase'] = 'complete'
+                    return True
+
+            dialogs = self.run_retry_window(directory, advance, metadata, client)
+            self.assertFalse(dialogs.called, dialogs.call_args)
+
+    def test_force_refresh_bypasses_cache_in_main_window(self):
+        metadata = Mock(side_effect=[{'authors': ['Ada'], 'year': '1843', 'title': title}
+                                     for title in ('Original', 'Fresh')])
+        client = Mock(return_value=Mock())
+        with tempfile.TemporaryDirectory() as directory:
+            sources = self.make_sources(directory, 1)
+            def advance(state, panel, buttons, labels, widgets):
+                if state['phase'] == 'start':
+                    app.selected_files[:] = sources
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'first'
+                elif state['phase'] == 'first':
+                    force = next(w for w in widgets if isinstance(w, ttk.Checkbutton)
+                                 and w.cget('text') == 'Force fresh extraction (ignore cache)')
+                    force.invoke()
+                    buttons['Process PDFs'].invoke()
+                    state['phase'] = 'fresh'
+                elif state['phase'] == 'fresh':
+                    self.assertEqual(metadata.call_count, 2)
+                    self.assertEqual(client.call_count, 2)
+                    self.assertEqual(panel.rows[0]['extraction_source'], 'model')
+                    self.assertEqual(Path(panel.rows[0]['source']).name, 'Fresh.pdf')
+                    state['phase'] = 'complete'
+                    return True
+            dialogs = self.run_retry_window(directory, advance, metadata, client)
+            self.assertFalse(dialogs.called, dialogs.call_args)
+
     def test_restore_checks_changed_and_missing_sources_before_continuing(self):
         meta = {'authors': ['Ada'], 'year': '2024', 'title': 'Old title'}
         with tempfile.TemporaryDirectory() as directory:
