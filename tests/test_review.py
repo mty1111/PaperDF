@@ -126,6 +126,9 @@ class ReviewWidgetTests(unittest.TestCase):
         self.errors = self.enterContext(patch('paperdf_review.messagebox.showerror'))
         # Keep every integration-test dialog withdrawn, including construction.
         self.enterContext(patch.object(ReviewDialog, 'deiconify'))
+        # A withdrawn window cannot own a Cocoa modal grab. Real dialogs are
+        # shown before grabbing; the hidden test fixture must omit both actions.
+        self.enterContext(patch.object(ReviewDialog, 'grab_set'))
         self.dialogs = []
         self.addCleanup(self._close_dialogs)
 
