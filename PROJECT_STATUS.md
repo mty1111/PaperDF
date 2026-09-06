@@ -1,8 +1,10 @@
 # PaperDF roadmap status
 
-## Current delivery: 1.4.0 pre-release
+## Current delivery: 1.4.0 local pre-release candidate
 
 Stages 2 and 3 implementation are complete; stage 4 has its first delivery (headless core and CLI); real Gemini/PDF acceptance remains deferred by user request. CI and release outcomes are recorded on the matching GitHub commit/tag; do not infer installation or real-provider validation from a successful package build.
+
+The stage 4 candidate is committed locally and has not been pushed or published. Automatic approval review rejected the attempted history amendment/default-branch push because this request did not explicitly authorize publishing to `main`. No history amendment or remote push occurred; file-ending cleanup was saved as a separate local commit. Remote CI for this candidate has not run. Publication awaits user authorization after local delivery verification.
 
 | Stage | Status | Scope |
 | --- | --- | --- |
@@ -50,3 +52,10 @@ Stages 2 and 3 implementation are complete; stage 4 has its first delivery (head
 - The latest saved batch keeps original extraction settings and local corrections; strict response validation applies to new model responses, not retroactively to saved/manual metadata.
 
 Local baseline verification: `python scripts/run_tests.py` — 170 tests, 169 passed, one Windows symlink-permission skip. Tests use synthetic PDFs and mocked provider responses. Publication and remote CI must be checked separately.
+
+Local Windows packaging succeeded for both desktop and console executables. The packaged CLI passed preview → restart/apply → status/CSV → undo against a synthetic Unicode-named PDF and prefilled cache with no API key. Embedded version 1.4.0.0, shared modules and SHA-256 sidecars were verified:
+
+- `dist/PaperDF-v1.4.0-windows.exe`: `caf9991271d728053f14a8f9be2f04951dfa6101f65459ba2dcb770ae01300a9`
+- `dist/PaperDF-cli-v1.4.0-windows.exe`: `ecc00b81cc9fc625e6b039722e2d0a64ab1e81c4ffd08c55b11c3e229cf54221`
+
+Local command evidence is in ignored `build/stage4-final-tests.log`, `build/stage4-windows-build.log` and `build/stage4-packaged-smoke.log`. These are local artifacts, not GitHub release assets; a later CI build can have different checksums.

@@ -12,7 +12,7 @@ python -m paperdf_cli status --csv "D:\Papers\results.csv"
 python -m paperdf_cli undo
 ```
 
-Windows releases also include `PaperDF-cli-v1.4.0-windows.exe` with a checksum. Replace `python -m paperdf_cli` with the console executable path. The ordinary `PaperDF-v1.4.0-windows.exe` remains the desktop application. macOS/Linux CLI users currently run from Python source; their standalone packages still contain the desktop application.
+The Windows build produces `PaperDF-cli-v1.4.0-windows.exe` with a checksum. Replace `python -m paperdf_cli` with the console executable path. The ordinary `PaperDF-v1.4.0-windows.exe` remains the desktop application. The 1.4.0 candidate is currently available locally and awaits publication approval. macOS/Linux CLI users run from Python source; their standalone packaging still targets the desktop application.
 
 ## Commands
 
