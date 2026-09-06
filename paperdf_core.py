@@ -173,5 +173,3 @@ def reanalyze_row(row, pages, is_book, sdk_client, model, cancelled, review_dir=
     row.clear()
     row.update(replacement)
     return True
-
-

@@ -13,4 +13,3 @@ MAX_PAGES_TO_EXTRACT = 50
 # Author format defaults
 DEFAULT_AUTHOR_FMT_PAPER = '{surname}'
 DEFAULT_AUTHOR_FMT_BOOK = '{surname}, {first_initial}.'
-

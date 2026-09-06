@@ -283,5 +283,3 @@ class _LazyGeminiClient:
     def close(self):
         if self.instance is not None:
             self.instance.close()
-
-

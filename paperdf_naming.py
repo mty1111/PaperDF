@@ -69,5 +69,3 @@ def build_new_filename(meta: dict, is_book: bool = False, naming_settings=None) 
     )
     cleaned = ''.join(c for c in filename if c not in INVALID_FILENAME_CHARS)
     return ' '.join(cleaned.split()).strip()
-
-
